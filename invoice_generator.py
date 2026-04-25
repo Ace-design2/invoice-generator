@@ -86,7 +86,7 @@ def get_items():
             break
         try:
             quantity = int(input("Quantity: ").strip())
-            price = float(input("Price per item: ").strip())
+            price = float(input("Price per item (₦): ").strip())
         except ValueError:
             print("Invalid input for quantity or price. Try again.")
             continue
@@ -134,7 +134,7 @@ def generate_pdf(company, client, items):
                 <div class="justify-start text-black text-xs font-normal font-['Inter']">{item['name']}</div>
                 <div class="flex justify-start items-start gap-16">
                     <div class="w-12 text-center justify-start text-black text-xs font-bold font-['Inter']">{item['quantity']}</div>
-                    <div class="w-32 text-center justify-start text-black text-xs font-bold font-['Inter']">{item['price']:,.2f}</div>
+                    <div class="w-32 text-center justify-start text-black text-xs font-bold font-['Inter']">₦{item['price']:,.2f}</div>
                 </div>
             </div>"""
 
@@ -234,7 +234,7 @@ def generate_pdf(company, client, items):
         <div class="justify-start text-black text-xs font-bold font-['Inter']">TOTAL</div>
         <div class="flex justify-start items-start gap-16">
             <div class="w-12 text-center justify-start text-black text-xs font-bold font-['Inter']"></div>
-            <div class="w-32 text-center justify-start text-black text-xs font-bold font-['Inter']">{total_amount:,.2f}</div>
+            <div class="w-32 text-center justify-start text-black text-xs font-bold font-['Inter']">₦{total_amount:,.2f}</div>
         </div>
     </div>
     
@@ -309,12 +309,43 @@ def main():
     
     try:
         company = get_company_details()
-        client = get_client_details()
-        items = get_items()
         
-        if not items:
-            print("No items added. Exiting.")
-            return
+        print("\n--- Quick Invoice (NLP) ---")
+        nlp_msg = input("Enter invoice command (e.g., 'Create invoice for John for 50k')\nor press Enter for manual entry: ").strip()
+        
+        if nlp_msg:
+            from nlp_parser import extract_invoice_data
+            print("Analyzing message...")
+            data = extract_invoice_data(nlp_msg)
+            
+            client_name = data.get('name') or "Client"
+            amount_str = data.get('amount') or "0"
+            try:
+                amount = float(amount_str)
+            except ValueError:
+                amount = 0.0
+                
+            print(f"Extracted -> Name: {client_name}, Amount: ₦{amount:,.2f}")
+            
+            client = {
+                'name': client_name,
+                'email': '',
+                'phone': '',
+                'location': ''
+            }
+            items = [{
+                'name': 'Custom Order',
+                'quantity': 1,
+                'price': amount,
+                'total': amount
+            }]
+        else:
+            client = get_client_details()
+            items = get_items()
+            
+            if not items:
+                print("No items added. Exiting.")
+                return
             
         generate_pdf(company, client, items)
     except KeyboardInterrupt:
