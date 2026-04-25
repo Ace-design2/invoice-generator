@@ -55,7 +55,7 @@ def extract_invoice_data(message):
             name = match_for.group(1)
 
     items_extracted = []
-    # If the message has multiple lines or commas, try to parse items like "Tshirt 5" or "5 Tshirt"
+    # Method 1: Regex for simple list formats (e.g., "Tshirt 5" or "5 Tshirt")
     parts = re.split(r'\n|,', message)
     for part in parts:
         part = part.strip()
@@ -70,6 +70,45 @@ def extract_invoice_data(message):
         if m2:
             items_extracted.append({'name': m2.group(2).strip(), 'quantity': int(m2.group(1))})
             continue
+
+    # Method 2: SpaCy dependency parsing for items embedded in sentences (e.g., "bought 2 Laptops")
+    for token in doc:
+        if token.pos_ == "NUM" and token.dep_ == "nummod":
+            # Skip if it's likely a money amount (handled separately)
+            if token.text.lower().endswith('k') or token.head.text.lower() in ['total', 'amount', 'k']:
+                continue
+            
+            try:
+                qty = int(token.text.replace(',', ''))
+                item_name = token.head.text
+                
+                # Validation: item name shouldn't be a stopword and head should be a noun/propn
+                if not token.head.is_stop and token.head.pos_ in ["NOUN", "PROPN"]:
+                    # Check for duplicates or overlapping names
+                    already_exists = False
+                    for existing in items_extracted:
+                        if existing['quantity'] == qty:
+                            if item_name.lower() in existing['name'].lower() or existing['name'].lower() in item_name.lower():
+                                already_exists = True
+                                break
+                    
+                    if not already_exists:
+                        items_extracted.append({'name': item_name, 'quantity': qty})
+            except ValueError:
+                continue
+
+    # Cleanup name if it contains digits (likely a false positive from an item quantity)
+    if name and re.search(r'\d', name):
+        name = None
+        
+    # Invalidate name if it matches an extracted item name
+    if name:
+        name_lower = name.lower()
+        for item in items_extracted:
+            item_name_lower = item['name'].lower()
+            if name_lower in item_name_lower or item_name_lower in name_lower:
+                name = None
+                break
 
     return {
         "name": name,

@@ -35,5 +35,8 @@ env/
 
 # Project Specific
 company_details.json
+clients.json
 invoice_*.pdf
 *.pdf
+test_*.py
+test_*.pdf
