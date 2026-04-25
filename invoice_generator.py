@@ -13,6 +13,7 @@ except ImportError:
     exit(1)
 
 COMPANY_FILE = "company_details.json"
+CLIENTS_FILE = "clients.json"
 
 def get_company_details():
     if os.path.exists(COMPANY_FILE):
@@ -68,14 +69,58 @@ def get_company_details():
     print("Company details saved!")
     return company
 
-def get_client_details():
-    print("\n--- Enter Client Details ---")
-    client = {}
-    client['name'] = input("Client Name: ").strip()
-    client['email'] = input("Client Email: ").strip()
-    client['phone'] = input("Client Phone: ").strip()
-    client['location'] = input("Client Location: ").strip()
+def load_clients():
+    if os.path.exists(CLIENTS_FILE):
+        try:
+            with open(CLIENTS_FILE, 'r') as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+def save_clients(clients):
+    with open(CLIENTS_FILE, 'w') as f:
+        json.dump(clients, f, indent=4)
+
+def get_or_create_client(name_hint=None):
+    clients = load_clients()
+    
+    if name_hint:
+        client_name = name_hint
+    else:
+        print("\n--- Enter Client Details ---")
+        client_name = input("Client Name: ").strip()
+        while not client_name:
+            client_name = input("Client Name cannot be empty. Client Name: ").strip()
+            
+    client_key = client_name.lower()
+    
+    if client_key in clients:
+        use_existing = input(f"Found saved details for '{clients[client_key]['name']}'. Use them? (y/n) [y]: ").strip().lower()
+        if use_existing == 'y' or use_existing == '':
+            return clients[client_key]
+            
+    if name_hint:
+        print(f"\nEntering details for {client_name}:")
+        
+    client_email = input("Client Email (optional, press Enter to skip): ").strip()
+    client_phone = input("Client Phone (optional, press Enter to skip): ").strip()
+    client_location = input("Client Location (optional, press Enter to skip): ").strip()
+
+    client = {
+        'name': client_name,
+        'email': client_email,
+        'phone': client_phone,
+        'location': client_location
+    }
+    
+    clients[client_key] = client
+    save_clients(clients)
+    
     return client
+
+def get_client_details():
+    return get_or_create_client()
 
 def get_items():
     print("\n--- Enter Items ---")
@@ -318,27 +363,52 @@ def main():
             print("Analyzing message...")
             data = extract_invoice_data(nlp_msg)
             
-            client_name = data.get('name') or "Client"
-            amount_str = data.get('amount') or "0"
-            try:
-                amount = float(amount_str)
-            except ValueError:
-                amount = 0.0
-                
-            print(f"Extracted -> Name: {client_name}, Amount: ₦{amount:,.2f}")
+            client_name = data.get('name')
+            if not client_name:
+                client_name = input("Client Name not found in prompt. Please enter Client Name: ").strip()
+                while not client_name:
+                    client_name = input("Client Name cannot be empty. Client Name: ").strip()
             
-            client = {
-                'name': client_name,
-                'email': '',
-                'phone': '',
-                'location': ''
-            }
-            items = [{
-                'name': 'Custom Order',
-                'quantity': 1,
-                'price': amount,
-                'total': amount
-            }]
+            client = get_or_create_client(client_name)
+
+            amount_str = data.get('amount')
+            amount = 0.0
+            if amount_str:
+                try:
+                    amount = float(amount_str)
+                except ValueError:
+                    amount = 0.0
+            
+            items_extracted = data.get('items', [])
+            items = []
+            
+            if items_extracted:
+                print(f"\nDetected Name: {client_name}")
+                print("\nDetected items from prompt:")
+                for ext_item in items_extracted:
+                    price_input = input(f"Price per {ext_item['name']} (Quantity: {ext_item['quantity']}): ₦").strip()
+                    try:
+                        price = float(price_input)
+                    except ValueError:
+                        price = 0.0
+                    items.append({
+                        'name': ext_item['name'],
+                        'quantity': ext_item['quantity'],
+                        'price': price,
+                        'total': ext_item['quantity'] * price
+                    })
+            elif amount > 0:
+                print(f"Extracted -> Name: {client_name}, Total Amount: ₦{amount:,.2f}")
+                items = [{
+                    'name': 'Custom Order',
+                    'quantity': 1,
+                    'price': amount,
+                    'total': amount
+                }]
+            else:
+                print(f"Detected Name: {client_name}")
+                print("Could not detect items or total amount. Let's add items manually.")
+                items = get_items()
         else:
             client = get_client_details()
             items = get_items()

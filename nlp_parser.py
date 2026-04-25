@@ -45,9 +45,8 @@ def extract_invoice_data(message):
             if match_comma:
                 amount = re.sub(r'[^\d]', '', match_comma.group())
             else:
-                match = re.search(r'\d+', message)
-                if match:
-                    amount = match.group()
+                # Removed generic \d+ matching so we don't accidentally grab item quantities as total amount
+                pass
 
     # Backup name detection if spacy failed but there's a structure like "for John"
     if not name:
@@ -55,9 +54,27 @@ def extract_invoice_data(message):
         if match_for:
             name = match_for.group(1)
 
+    items_extracted = []
+    # If the message has multiple lines or commas, try to parse items like "Tshirt 5" or "5 Tshirt"
+    parts = re.split(r'\n|,', message)
+    for part in parts:
+        part = part.strip()
+        if not part: continue
+        
+        m1 = re.match(r'^([a-zA-Z][a-zA-Z\s]+?)\s+(\d+)$', part)
+        if m1:
+            items_extracted.append({'name': m1.group(1).strip(), 'quantity': int(m1.group(2))})
+            continue
+            
+        m2 = re.match(r'^(\d+)\s+([a-zA-Z][a-zA-Z\s]+?)$', part)
+        if m2:
+            items_extracted.append({'name': m2.group(2).strip(), 'quantity': int(m2.group(1))})
+            continue
+
     return {
         "name": name,
-        "amount": amount
+        "amount": amount,
+        "items": items_extracted
     }
 
 if __name__ == "__main__":
