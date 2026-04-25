@@ -1,8 +1,7 @@
-import json
 import os
-from datetime import datetime
 import uuid
 import base64
+from datetime import datetime
 
 # Check if playwright is available
 try:
@@ -10,145 +9,17 @@ try:
 except ImportError:
     print("Playwright is not installed.")
     print("Please run: python3 -m pip install playwright && python3 -m playwright install chromium")
-    exit(1)
 
-COMPANY_FILE = "company_details.json"
-CLIENTS_FILE = "clients.json"
-
-def get_company_details():
-    if os.path.exists(COMPANY_FILE):
-        with open(COMPANY_FILE, 'r') as f:
-            company = json.load(f)
-        print(f"Loaded company details for {company.get('name')}.")
-        use_existing = input("Do you want to use these details? (y/n) [y]: ").strip().lower()
-        if use_existing == 'y' or use_existing == '':
-            return company
-            
-    print("\n--- Enter Company Details ---")
-    company = {}
-    name_or_logo = input("Company Name or Logo Path (e.g., UNIQUE FOOTWEARS or /path/to/logo.png): ").strip()
-    
-    if os.path.isfile(name_or_logo):
-        company['logo'] = name_or_logo
-        company['name'] = ""
-    else:
-        company['logo'] = ""
-        company['name'] = name_or_logo
-        
-    company['contact_name'] = input("Contact Name: ").strip()
-    company['email'] = input("Email: ").strip()
-    company['phone'] = input("Phone Number: ").strip()
-    company['location'] = input("Location: ").strip()
-    company['bank1_name'] = input("Bank 1 Name: ").strip()
-    company['bank1_account'] = input("Bank 1 Account Number: ").strip()
-    company['bank2_name'] = input("Bank 2 Name (Optional): ").strip()
-    company['bank2_account'] = input("Bank 2 Account Number (Optional): ").strip()
-    
-    if company.get('logo'):
-        company['short_name'] = ""
-    else:
-        company['short_name'] = input("Company Short Name (e.g., UNIQUE): ").strip()
-    
-    offers_refund = input("Do you offer refunds? (y/n) [y]: ").strip().lower()
-    company['offers_refund'] = (offers_refund == 'y' or offers_refund == '')
-    
-    if company['offers_refund']:
-        default_policy = "Refunds are accepted within 7 days of purchase. Items must be returned in their original packaging, unused, and with the original receipt. Custom or personalized orders are strictly non-refundable. Please allow 3-5 business days for the refund to process to your original payment method. For any issues, contact our support team immediately."
-    else:
-        default_policy = "All sales are final. We do not accept returns, exchanges, or refunds under any circumstances once a purchase is completed. Please ensure your order is correct before finalizing payment."
-
-    policy = input(f"Enter Policy Text (Press Enter for default, or type 'none' to omit):\n[{default_policy}]\n> ").strip()
-    
-    if policy.lower() == 'none':
-        company['refund_policy_text'] = ""
-    else:
-        company['refund_policy_text'] = policy if policy else default_policy
-    
-    with open(COMPANY_FILE, 'w') as f:
-        json.dump(company, f, indent=4)
-    print("Company details saved!")
-    return company
-
-def load_clients():
-    if os.path.exists(CLIENTS_FILE):
-        try:
-            with open(CLIENTS_FILE, 'r') as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            return {}
-    return {}
-
-def save_clients(clients):
-    with open(CLIENTS_FILE, 'w') as f:
-        json.dump(clients, f, indent=4)
-
-def get_or_create_client(name_hint=None):
-    clients = load_clients()
-    
-    if name_hint:
-        client_name = name_hint
-    else:
-        print("\n--- Enter Client Details ---")
-        client_name = input("Client Name: ").strip()
-        while not client_name:
-            client_name = input("Client Name cannot be empty. Client Name: ").strip()
-            
-    client_key = client_name.lower()
-    
-    if client_key in clients:
-        use_existing = input(f"Found saved details for '{clients[client_key]['name']}'. Use them? (y/n) [y]: ").strip().lower()
-        if use_existing == 'y' or use_existing == '':
-            return clients[client_key]
-            
-    if name_hint:
-        print(f"\nEntering details for {client_name}:")
-        
-    client_email = input("Client Email (optional, press Enter to skip): ").strip()
-    client_phone = input("Client Phone (optional, press Enter to skip): ").strip()
-    client_location = input("Client Location (optional, press Enter to skip): ").strip()
-
-    client = {
-        'name': client_name,
-        'email': client_email,
-        'phone': client_phone,
-        'location': client_location
-    }
-    
-    clients[client_key] = client
-    save_clients(clients)
-    
-    return client
-
-def get_client_details():
-    return get_or_create_client()
-
-def get_items():
-    print("\n--- Enter Items ---")
-    items = []
-    while True:
-        name = input("Item Name (or press Enter to finish): ").strip()
-        if not name:
-            break
-        try:
-            quantity = int(input("Quantity: ").strip())
-            price = float(input("Price per item (₦): ").strip())
-        except ValueError:
-            print("Invalid input for quantity or price. Try again.")
-            continue
-        items.append({
-            'name': name,
-            'quantity': quantity,
-            'price': price,
-            'total': quantity * price
-        })
-    return items
+ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets")
+BANK_LOGOS_DIR = os.path.join(ASSETS_DIR, "bank_logos")
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "outputs")
 
 def get_bank_logo_html(bank_name):
     if not bank_name:
         return ""
     safe_name = bank_name.lower().replace(" ", "")
     for ext in ['.png', '.jpg', '.jpeg', '.svg']:
-        path = os.path.join('bank_logos', f'{safe_name}{ext}')
+        path = os.path.join(BANK_LOGOS_DIR, f'{safe_name}{ext}')
         if os.path.exists(path):
             with open(path, 'rb') as img_file:
                 b64_string = base64.b64encode(img_file.read()).decode('utf-8')
@@ -212,8 +83,6 @@ def generate_pdf(company, client, items):
     <style>
         body {{ font-family: 'Inter', sans-serif; background-color: white; margin: 0; padding: 0; }}
         * {{ -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }}
-        
-        /* The container itself */
         .invoice-container {{
             width: 100%;
             min-height: 100vh;
@@ -322,18 +191,19 @@ def generate_pdf(company, client, items):
     """
 
     filename = f"invoice_{invoice_id}.pdf"
-    print("Generating PDF...")
+    file_path = os.path.join(OUTPUT_DIR, filename)
+    
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         page.set_content(html, wait_until='networkidle')
         
-        # Calculate appropriate bottom margin based on whether there's a refund policy
         bottom_margin = "130px" if refund_policy_text else "40px"
         
         page.pdf(
-            path=filename,
+            path=file_path,
             format="A4",
             print_background=True,
             display_header_footer=True,
@@ -344,82 +214,4 @@ def generate_pdf(company, client, items):
         
         browser.close()
         
-    print(f"\nInvoice successfully generated: {filename}")
-    print(f"To open the invoice, run: open {filename}")
-
-def main():
-    print("========================================")
-    print("        INVOICE GENERATOR CLI")
-    print("========================================")
-    
-    try:
-        company = get_company_details()
-        
-        print("\n--- Quick Invoice (NLP) ---")
-        nlp_msg = input("Enter invoice command (e.g., 'Create invoice for John for 50k')\nor press Enter for manual entry: ").strip()
-        
-        if nlp_msg:
-            from nlp_parser import extract_invoice_data
-            print("Analyzing message...")
-            data = extract_invoice_data(nlp_msg)
-            
-            client_name = data.get('name')
-            if not client_name:
-                client_name = input("Client Name not found in prompt. Please enter Client Name: ").strip()
-                while not client_name:
-                    client_name = input("Client Name cannot be empty. Client Name: ").strip()
-            
-            client = get_or_create_client(client_name)
-
-            amount_str = data.get('amount')
-            amount = 0.0
-            if amount_str:
-                try:
-                    amount = float(amount_str)
-                except ValueError:
-                    amount = 0.0
-            
-            items_extracted = data.get('items', [])
-            items = []
-            
-            if items_extracted:
-                print(f"\nDetected Name: {client_name}")
-                print("\nDetected items from prompt:")
-                for ext_item in items_extracted:
-                    price_input = input(f"Price per {ext_item['name']} (Quantity: {ext_item['quantity']}): ₦").strip()
-                    try:
-                        price = float(price_input)
-                    except ValueError:
-                        price = 0.0
-                    items.append({
-                        'name': ext_item['name'],
-                        'quantity': ext_item['quantity'],
-                        'price': price,
-                        'total': ext_item['quantity'] * price
-                    })
-            elif amount > 0:
-                print(f"Extracted -> Name: {client_name}, Total Amount: ₦{amount:,.2f}")
-                items = [{
-                    'name': 'Custom Order',
-                    'quantity': 1,
-                    'price': amount,
-                    'total': amount
-                }]
-            else:
-                print(f"Detected Name: {client_name}")
-                print("Could not detect items or total amount. Let's add items manually.")
-                items = get_items()
-        else:
-            client = get_client_details()
-            items = get_items()
-            
-            if not items:
-                print("No items added. Exiting.")
-                return
-            
-        generate_pdf(company, client, items)
-    except KeyboardInterrupt:
-        print("\nOperation cancelled by user. Exiting.")
-
-if __name__ == "__main__":
-    main()
+    return file_path

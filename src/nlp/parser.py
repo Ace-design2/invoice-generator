@@ -4,7 +4,7 @@ import re
 try:
     nlp = spacy.load("en_core_web_sm")
 except OSError:
-    print("Downloading language model for the spacy POS tagger\n(don't worry, this will only happen once)")
+    print("Downloading language model for the spacy POS tagger...")
     from spacy.cli import download
     download("en_core_web_sm")
     nlp = spacy.load("en_core_web_sm")
@@ -44,9 +44,6 @@ def extract_invoice_data(message):
             match_comma = re.search(r'\d{1,3}(?:,\d{3})+', message)
             if match_comma:
                 amount = re.sub(r'[^\d]', '', match_comma.group())
-            else:
-                # Removed generic \d+ matching so we don't accidentally grab item quantities as total amount
-                pass
 
     # Backup name detection if spacy failed but there's a structure like "for John"
     if not name:
@@ -55,7 +52,7 @@ def extract_invoice_data(message):
             name = match_for.group(1)
 
     items_extracted = []
-    # Method 1: Regex for simple list formats (e.g., "Tshirt 5" or "5 Tshirt")
+    # Method 1: Regex for simple list formats
     parts = re.split(r'\n|,', message)
     for part in parts:
         part = part.strip()
@@ -71,10 +68,9 @@ def extract_invoice_data(message):
             items_extracted.append({'name': m2.group(2).strip(), 'quantity': int(m2.group(1))})
             continue
 
-    # Method 2: SpaCy dependency parsing for items embedded in sentences (e.g., "bought 2 Laptops")
+    # Method 2: SpaCy dependency parsing
     for token in doc:
         if token.pos_ == "NUM" and token.dep_ == "nummod":
-            # Skip if it's likely a money amount (handled separately)
             if token.text.lower().endswith('k') or token.head.text.lower() in ['total', 'amount', 'k']:
                 continue
             
@@ -82,9 +78,7 @@ def extract_invoice_data(message):
                 qty = int(token.text.replace(',', ''))
                 item_name = token.head.text
                 
-                # Validation: item name shouldn't be a stopword and head should be a noun/propn
                 if not token.head.is_stop and token.head.pos_ in ["NOUN", "PROPN"]:
-                    # Check for duplicates or overlapping names
                     already_exists = False
                     for existing in items_extracted:
                         if existing['quantity'] == qty:
@@ -97,11 +91,9 @@ def extract_invoice_data(message):
             except ValueError:
                 continue
 
-    # Cleanup name if it contains digits (likely a false positive from an item quantity)
     if name and re.search(r'\d', name):
         name = None
         
-    # Invalidate name if it matches an extracted item name
     if name:
         name_lower = name.lower()
         for item in items_extracted:
@@ -115,8 +107,3 @@ def extract_invoice_data(message):
         "amount": amount,
         "items": items_extracted
     }
-
-if __name__ == "__main__":
-    message = "Create an invoice for John for 50k"
-    data = extract_invoice_data(message)
-    print(data)

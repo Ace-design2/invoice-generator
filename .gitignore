@@ -34,9 +34,7 @@ env/
 .DS_Store
 
 # Project Specific
-company_details.json
-clients.json
-invoice_*.pdf
+data/*.json
+outputs/
 *.pdf
-test_*.py
-test_*.pdf
+.env
