@@ -38,7 +38,7 @@ def get_image_base64_html_from_path(path, height_class="h-10"):
     mime = 'image/svg+xml' if ext == '.svg' else f'image/{ext[1:]}'
     return f'<img src="data:{mime};base64,{b64_string}" class="{height_class} object-contain">'
 
-def generate_pdf(company, client, items):
+def generate_pdf(company, client, items, is_receipt=False):
     total_amount = sum(item['total'] for item in items)
     invoice_id = str(uuid.uuid4())[:8].upper()
     date_str = datetime.now().strftime("%B %d, %Y")
@@ -62,6 +62,7 @@ def generate_pdf(company, client, items):
 
     bank2_name_html = f'<div class="w-28 justify-start text-black text-sm font-bold font-[\'Inter\'] flex items-center">{bank2_display}</div>' if bank2_display else ""
     bank2_acc_html = f'<div class="w-28 justify-start text-black text-sm font-normal font-[\'Inter\']">{company.get("bank2_account", "")}</div>' if company.get("bank2_account") else ""
+    bank2_acc_name_html = f'<div class="w-28 justify-start text-black text-[10px] font-normal font-[\'Inter\']">{company.get("bank2_account_name", "")}</div>' if company.get("bank2_account_name") else ""
 
     logo_path = company.get('logo')
     if logo_path and os.path.exists(logo_path):
@@ -72,12 +73,21 @@ def generate_pdf(company, client, items):
         display_short_name = company.get('short_name', company.get('name', 'COMPANY').split()[0] if company.get('name') else 'COMPANY')
         bottom_company_display = f"<div class=\"justify-start text-black text-3xl font-bold font-['Inter']\">{display_short_name}</div>"
 
+    document_title = "Receipt" if is_receipt else "Invoice"
+    paid_stamp_html = ""
+    if is_receipt:
+        paid_stamp_html = """
+        <div style="position: absolute; top: 150px; right: 50px; transform: rotate(-15deg); border: 6px solid #ef4444; color: #ef4444; font-size: 4rem; font-weight: bold; padding: 0.5rem 1rem; border-radius: 0.5rem; opacity: 0.3; pointer-events: none; z-index: 50; font-family: 'Inter', sans-serif;">
+            PAID
+        </div>
+        """
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Invoice - {invoice_id}</title>
+    <title>{document_title} - {invoice_id}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
     <style>
@@ -99,13 +109,14 @@ def generate_pdf(company, client, items):
 </head>
 <body>
 <div class="invoice-container">
+    {paid_stamp_html}
     <div class="self-stretch px-6 flex flex-col justify-start items-end gap-2.5 pt-12">
         <div class="inline-flex justify-center items-center">
             {top_company_display}
         </div>
     </div>
     <div class="self-stretch px-6 inline-flex justify-start items-center gap-2.5">
-        <div class="justify-start text-black text-4xl font-bold font-['Inter']">Invoice</div>
+        <div class="justify-start text-black text-4xl font-bold font-['Inter']">{document_title}</div>
     </div>
     <div class="self-stretch px-6 inline-flex justify-between items-start">
         <div class="inline-flex flex-col justify-center items-start gap-3">
@@ -129,7 +140,7 @@ def generate_pdf(company, client, items):
     </div>
     <div class="self-stretch border-t-[1pt] border-dashed border-black"></div>
     <div class="self-stretch px-6 flex flex-col justify-center items-start gap-1">
-        <div class="justify-start text-black text-xs font-bold font-['Inter']">INVOICE ID: {invoice_id}</div>
+        <div class="justify-start text-black text-xs font-bold font-['Inter']">{document_title.upper()} ID: {invoice_id}</div>
         <div class="justify-start text-black text-xs font-bold font-['Inter']">DATE: {date_str}</div>
     </div>
     <div class="self-stretch px-6 inline-flex justify-start items-center gap-2.5">
@@ -161,6 +172,10 @@ def generate_pdf(company, client, items):
                 {bank2_name_html}
             </div>
             <div class="w-64 inline-flex justify-between items-center">
+                <div class="w-28 justify-start text-black text-[10px] font-normal font-['Inter']">{company.get('bank1_account_name', '')}</div>
+                {bank2_acc_name_html}
+            </div>
+            <div class="w-64 inline-flex justify-between items-center">
                 <div class="w-28 justify-start text-black text-sm font-normal font-['Inter']">{company.get('bank1_account', '')}</div>
                 {bank2_acc_html}
             </div>
@@ -190,7 +205,8 @@ def generate_pdf(company, client, items):
     </div>
     """
 
-    filename = f"invoice_{invoice_id}.pdf"
+    prefix = "receipt" if is_receipt else "invoice"
+    filename = f"{prefix}_{invoice_id}.pdf"
     file_path = os.path.join(OUTPUT_DIR, filename)
     
     os.makedirs(OUTPUT_DIR, exist_ok=True)

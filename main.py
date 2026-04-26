@@ -29,8 +29,10 @@ def setup_company():
     company['location'] = input("Location: ").strip()
     company['bank1_name'] = input("Bank 1 Name: ").strip()
     company['bank1_account'] = input("Bank 1 Account Number: ").strip()
+    company['bank1_account_name'] = input("Bank 1 Account Name: ").strip()
     company['bank2_name'] = input("Bank 2 Name (Optional): ").strip()
     company['bank2_account'] = input("Bank 2 Account Number (Optional): ").strip()
+    company['bank2_account_name'] = input("Bank 2 Account Name (Optional): ").strip()
     
     if not company.get('logo'):
         company['short_name'] = input("Company Short Name (e.g., UNIQUE): ").strip()
@@ -149,6 +151,12 @@ def main():
             file_path = generate_pdf(company, client, items)
             print(f"\nInvoice generated: {file_path}")
             print(f"To open: open \"{file_path}\"")
+            
+            gen_receipt = input("\nDo you want to generate a receipt for this? (y/n) [n]: ").strip().lower()
+            if gen_receipt == 'y':
+                receipt_path = generate_pdf(company, client, items, is_receipt=True)
+                print(f"Receipt generated: {receipt_path}")
+                print(f"To open: open \"{receipt_path}\"")
         else:
             print("No items, no invoice.")
             
