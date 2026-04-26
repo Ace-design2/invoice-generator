@@ -1,3 +1,5 @@
 playwright
 spacy
 flask
+requests
+python-dotenv
