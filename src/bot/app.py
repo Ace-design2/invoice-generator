@@ -58,7 +58,9 @@ def handle_message(from_number, text):
     # 1. AUTH & PROFILE CHECK
     profile = get_business_profile(from_number)
     if not profile and text_lower not in ["start", "invoice", "hi", "hello"]:
-        if session and session.get("state", "").startswith("AWAITING_BIZ"):
+        # Check if they are in the middle of any business setup state
+        is_setup_state = session and ("BIZ" in session.get("state", "") or "REFUND" in session.get("state", ""))
+        if is_setup_state:
             pass 
         else:
             send_text_message(from_number, "Welcome! Please set up your business profile first.\n\nType 'start' to begin.")
@@ -209,20 +211,35 @@ def process_biz_bank2(from_number, text):
         parts = [p.strip() for p in text.split(",")]
         if len(parts) >= 3: user_sessions[from_number]["bank2"] = parts
     user_sessions[from_number]["state"] = "AWAITING_REFUND_POLICY"
-    send_text_message(from_number, "Refund Policy? (or 'none')")
+    send_text_message(from_number, "Finally, let's set your Refund Policy. 📜\n\nType 'default' to use our standard policy, 'none' for no policy, or type out your custom policy.")
 
 def process_refund_policy(from_number, text):
     session = user_sessions[from_number]
+    
+    # Professional Default Policy
+    DEFAULT_POLICY = (
+        "Thank you for your business. Please note that all sales are final. "
+        "Refunds or exchanges are only permitted within 7 days of purchase for items found to be defective. "
+        "Items must be returned in their original packaging with the invoice."
+    )
+    
+    if text.lower() == "default":
+        refund_text = DEFAULT_POLICY
+    elif text.lower() == "none":
+        refund_text = ""
+    else:
+        refund_text = text
+        
     bank1 = session["bank1"]
     bank2 = session.get("bank2", [None, None, None])
     profile = {
         "name": session["biz_name"], "email": session["biz_email"], "phone": from_number,
         "bank1_name": bank1[0], "bank1_account": bank1[1], "bank1_account_name": bank1[2],
         "bank2_name": bank2[0], "bank2_account": bank2[1], "bank2_account_name": bank2[2],
-        "refund_policy_text": "" if text.lower() == "none" else text, "location": "Lagos"
+        "refund_policy_text": refund_text, "location": "Lagos"
     }
     save_business_profile(from_number, profile)
-    send_text_message(from_number, "Profile saved! Type 'invoice' to start.")
+    send_text_message(from_number, "Profile saved! ✅ Type 'invoice' to start.")
     del user_sessions[from_number]
 
 def finish_and_send_invoice(from_number):
