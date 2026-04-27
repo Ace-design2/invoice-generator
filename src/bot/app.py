@@ -119,8 +119,8 @@ def process_data_input(from_number, text):
     # Parse the input
     data = extract_invoice_data(text)
     
-    # Update Client if found
-    if data.get("name"):
+    # Update Client if found (and not already set)
+    if data.get("name") and not session.get("client"):
         clients = load_clients(from_number)
         client = clients.get(data["name"].lower())
         if not client:
@@ -132,14 +132,22 @@ def process_data_input(from_number, text):
     if data.get("items"):
         session["items"].extend(data["items"])
 
-    # If user sent just a number and we are missing price for the last item
+    # If user sent just a number and we are missing a price
     if not data.get("items") and session["items"]:
         try:
             clean_text = text.replace("₦", "").replace(",", "").strip()
-            price = float(clean_text)
-            if session["items"][-1]["price"] == 0:
-                session["items"][-1]["price"] = price
-                session["items"][-1]["total"] = session["items"][-1]["quantity"] * price
+            # Handle "10k" or "500"
+            if clean_text.lower().endswith('k'):
+                price = float(clean_text[:-1]) * 1000
+            else:
+                price = float(clean_text)
+            
+            # Find the first item that is missing a price and update it
+            for item in session["items"]:
+                if item["price"] == 0:
+                    item["price"] = price
+                    item["total"] = item["quantity"] * price
+                    break
         except ValueError:
             pass
 
@@ -154,7 +162,8 @@ def check_draft_completeness(from_number):
         return
 
     if not session["items"]:
-        send_text_message(from_number, f"Got the client: {session['client']['name']}. What are you selling and at what price?")
+        client_name = session["client"]["name"]
+        send_text_message(from_number, f"Got the client: *{client_name}*. ✅\n\nNow, what are you selling and at what price?\n(Example: 'Rice 2000' or '2 Laptops at 300k each')")
         return
 
     # Check for items without prices
