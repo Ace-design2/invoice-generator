@@ -13,97 +13,67 @@ def extract_invoice_data(message):
     doc = nlp(message)
 
     name = None
-    amount = None
-
-    # Extract names
-    for ent in doc.ents:
-        if ent.label_ == "PERSON" and not name:
-            name = ent.text
-
-        if ent.label_ == "MONEY" and not amount:
-            amount = ent.text
-
-    # Cleanup amount if found by spacy
-    if amount:
-        match_k = re.search(r'(\d+)\s*k\b', amount, re.IGNORECASE)
-        if match_k:
-            amount = str(int(match_k.group(1)) * 1000)
-        else:
-            # Extract just digits from money string like "$500" or "50,000"
-            digits = re.sub(r'[^\d]', '', amount)
-            if digits:
-                amount = digits
-
-    # Backup amount detection
-    if not amount:
-        match_k = re.search(r'(\d+)\s*k\b', message, re.IGNORECASE)
-        if match_k:
-            amount = str(int(match_k.group(1)) * 1000)
-        else:
-            # Look for large numbers with commas
-            match_comma = re.search(r'\d{1,3}(?:,\d{3})+', message)
-            if match_comma:
-                amount = re.sub(r'[^\d]', '', match_comma.group())
-
-    # Backup name detection if spacy failed but there's a structure like "for John"
-    if not name:
-        match_for = re.search(r'for\s+([A-Z][a-z]+)', message)
-        if match_for:
-            name = match_for.group(1)
-
     items_extracted = []
-    # Method 1: Regex for simple list formats
-    parts = re.split(r'\n|,', message)
-    for part in parts:
-        part = part.strip()
-        if not part: continue
-        
-        m1 = re.match(r'^([a-zA-Z][a-zA-Z\s]+?)\s+(\d+)$', part)
-        if m1:
-            items_extracted.append({'name': m1.group(1).strip(), 'quantity': int(m1.group(2))})
-            continue
-            
-        m2 = re.match(r'^(\d+)\s+([a-zA-Z][a-zA-Z\s]+?)$', part)
-        if m2:
-            items_extracted.append({'name': m2.group(2).strip(), 'quantity': int(m2.group(1))})
-            continue
 
-    # Method 2: SpaCy dependency parsing
-    for token in doc:
-        if token.pos_ == "NUM" and token.dep_ == "nummod":
-            if token.text.lower().endswith('k') or token.head.text.lower() in ['total', 'amount', 'k']:
-                continue
-            
-            try:
-                qty = int(token.text.replace(',', ''))
-                item_name = token.head.text
-                
-                if not token.head.is_stop and token.head.pos_ in ["NOUN", "PROPN"]:
-                    already_exists = False
-                    for existing in items_extracted:
-                        if existing['quantity'] == qty:
-                            if item_name.lower() in existing['name'].lower() or existing['name'].lower() in item_name.lower():
-                                already_exists = True
-                                break
-                    
-                    if not already_exists:
-                        items_extracted.append({'name': item_name, 'quantity': qty})
-            except ValueError:
-                continue
+    # 1. Extract Person/Company Name
+    # Look for "for [Name]" or "to [Name]" patterns first
+    match_for = re.search(r'(?:for|to|client|customer)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)', message, re.IGNORECASE)
+    if match_for:
+        name = match_for.group(1).strip()
+    else:
+        # Fallback to spaCy NER
+        for ent in doc.ents:
+            if ent.label_ in ["PERSON", "ORG"] and not name:
+                name = ent.text
 
-    if name and re.search(r'\d', name):
-        name = None
+    # 2. Item Extraction with Regex (Primary)
+    # Pattern: [Qty] [Item Name] [at/for/@/is] [Price]
+    # Example: "2 bags of rice at 5k" or "laptop for 200,000"
+    # Also handle simple "Item at Price" (infer qty=1)
+    
+    # Clean up common separators to make regex easier
+    clean_msg = message.replace(",", "")
+    
+    regex_items = re.finditer(r'(\d+)?\s*([a-zA-Z\s]{2,30}?) (?:at|for|is|@|costs)\s*(₦?[\d,kK]+)', clean_msg, re.IGNORECASE)
+    
+    for match in regex_items:
+        qty_str = match.group(1)
+        item_name = match.group(2).strip()
+        price_str = match.group(3).strip()
         
-    if name:
-        name_lower = name.lower()
-        for item in items_extracted:
-            item_name_lower = item['name'].lower()
-            if name_lower in item_name_lower or item_name_lower in name_lower:
-                name = None
-                break
+        # Clean price
+        price = 0
+        p_match = re.search(r'(\d+)\s*[kK]\b', price_str)
+        if p_match:
+            price = float(p_match.group(1)) * 1000
+        else:
+            digits = re.sub(r'[^\d.]', '', price_str)
+            price = float(digits) if digits else 0
+            
+        items_extracted.append({
+            "name": item_name,
+            "quantity": int(qty_str) if qty_str else 1, # Smart Default
+            "price": price,
+            "total": (int(qty_str) if qty_str else 1) * price
+        })
+
+    # 3. Simple Fallback for "2 laptops" (No price provided)
+    if not items_extracted:
+        # Look for [Qty] [Item] or just [Item]
+        fallback_regex = re.finditer(r'(\d+)\s+([a-zA-Z\s]{2,20})', clean_msg)
+        for match in fallback_regex:
+            qty = int(match.group(1))
+            item = match.group(2).strip()
+            # Avoid picking up names as items
+            if name and item.lower() in name.lower(): continue
+            items_extracted.append({
+                "name": item,
+                "quantity": qty,
+                "price": 0,
+                "total": 0
+            })
 
     return {
         "name": name,
-        "amount": amount,
         "items": items_extracted
     }

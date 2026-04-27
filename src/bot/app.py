@@ -1,11 +1,16 @@
 import os
 import json
+from datetime import datetime
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
 from src.nlp.parser import extract_invoice_data
 from src.core.generator import generate_pdf
-from src.persistence.storage import get_company_details, load_clients, save_clients
+from src.persistence.storage import (
+    get_business_profile, save_business_profile, 
+    load_clients, save_client,
+    save_invoice_record, get_invoice_record, mark_invoice_as_paid
+)
 from src.bot.whatsapp_client import send_text_message, upload_media, send_document_message
 
 load_dotenv()
@@ -14,29 +19,24 @@ app = Flask(__name__)
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 
 # Simple session management (In-memory)
-# In production, use Redis or a database
 user_sessions = {}
+
+@app.route("/privacy")
+def privacy():
+    return """<html><body style='font-family:sans-serif;padding:40px;'><h1>Privacy Policy</h1><p>We only process data to generate invoices.</p></body></html>""", 200
 
 @app.route("/webhook", methods=["GET"])
 def verify():
-    # Meta Webhook verification
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
-
-    if mode and token:
-        if mode == "subscribe" and token == VERIFY_TOKEN:
-            print("WEBHOOK_VERIFIED")
-            return challenge, 200
-        else:
-            return "Forbidden", 403
-    return "Not Found", 404
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        return challenge, 200
+    return "Forbidden", 403
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     body = request.get_json()
-
-    # Check if it's a WhatsApp message
     if body.get("object") == "whatsapp_business_account":
         for entry in body.get("entry", []):
             for change in entry.get("changes", []):
@@ -46,150 +46,214 @@ def webhook():
                     msg = messages[0]
                     from_number = msg.get("from")
                     msg_text = msg.get("text", {}).get("body", "").strip()
-                    
                     if msg_text:
                         handle_message(from_number, msg_text)
-        
         return "OK", 200
-    else:
-        return "Not Found", 404
+    return "Not Found", 404
 
 def handle_message(from_number, text):
     session = user_sessions.get(from_number)
+    text_lower = text.lower()
     
-    # Check if the user wants a receipt for the last sent invoice
-    if text.lower() == "receipt" and session and session.get("state") == "INVOICE_SENT":
+    # 1. AUTH & PROFILE CHECK
+    profile = get_business_profile(from_number)
+    if not profile and text_lower not in ["start", "invoice", "hi", "hello"]:
+        if session and session.get("state", "").startswith("AWAITING_BIZ"):
+            pass 
+        else:
+            send_text_message(from_number, "Welcome! Please set up your business profile first.\n\nType 'start' to begin.")
+            return
+
+    # 2. GLOBAL TRIGGERS
+    if text_lower in ["start", "hi", "hello", "new", "reset"]:
+        if not profile:
+            start_business_setup(from_number)
+        else:
+            user_sessions[from_number] = {"state": "COLLECTING_DATA", "items": [], "client": None}
+            send_text_message(from_number, "Let's create an invoice! 📝\n\nWho is the client, and what are you selling? (e.g., '2 laptops for Segun at 300k')")
+        return
+
+    if text_lower == "receipt" and session and session.get("state") == "INVOICE_SENT":
         send_receipt(from_number)
         return
 
-    # Check if we are waiting for a price input
-    if session and session.get("state") == "AWAITING_PRICE":
-        process_price_input(from_number, text)
-        return
+    # 3. STATE MACHINE
+    if session:
+        state = session.get("state")
+        
+        # --- Profile Setup ---
+        if state == "AWAITING_BIZ_NAME": process_biz_name(from_number, text); return
+        if state == "AWAITING_BIZ_EMAIL": process_biz_email(from_number, text); return
+        if state == "AWAITING_BIZ_BANK1": process_biz_bank1(from_number, text); return
+        if state == "AWAITING_BIZ_BANK2": process_biz_bank2(from_number, text); return
+        if state == "AWAITING_REFUND_POLICY": process_refund_policy(from_number, text); return
 
-    # Otherwise, treat as a new invoice command
+        # --- Conversational Invoice Flow ---
+        if state == "AWAITING_CONFIRMATION":
+            if text_lower in ["yes", "y", "confirm", "ok", "send"]:
+                session["state"] = "AWAITING_VAT_CHOICE"
+                send_text_message(from_number, "Add 7.5% VAT? (Yes/No)")
+            elif text_lower in ["no", "edit", "change"]:
+                send_text_message(from_number, "What would you like to change? (e.g., 'Price is 50k' or 'Client is John')")
+            else:
+                # Treat as an edit
+                process_data_input(from_number, text)
+            return
+
+        if state == "AWAITING_VAT_CHOICE":
+            session["vat_rate"] = 7.5 if text_lower in ["yes", "y"] else 0.0
+            finish_and_send_invoice(from_number)
+            return
+
+    # Default: Process as data input
+    process_data_input(from_number, text)
+
+def process_data_input(from_number, text):
+    session = user_sessions.get(from_number)
+    if not session or session.get("state") == "INVOICE_SENT":
+        session = {"state": "COLLECTING_DATA", "items": [], "client": None}
+        user_sessions[from_number] = session
+
+    # Parse the input
     data = extract_invoice_data(text)
     
-    if not data.get("items"):
-        send_text_message(from_number, "I couldn't find any items in your message. Try something like '5 bags of rice for Amina'.")
+    # Update Client if found
+    if data.get("name"):
+        clients = load_clients(from_number)
+        client = clients.get(data["name"].lower())
+        if not client:
+            client = {"name": data["name"], "email": "", "phone": "", "location": ""}
+            save_client(from_number, client)
+        session["client"] = client
+
+    # Update Items if found
+    if data.get("items"):
+        session["items"].extend(data["items"])
+
+    # If user sent just a number and we are missing price for the last item
+    if not data.get("items") and session["items"]:
+        try:
+            clean_text = text.replace("₦", "").replace(",", "").strip()
+            price = float(clean_text)
+            if session["items"][-1]["price"] == 0:
+                session["items"][-1]["price"] = price
+                session["items"][-1]["total"] = session["items"][-1]["quantity"] * price
+        except ValueError:
+            pass
+
+    # CHECK COMPLETENESS
+    check_draft_completeness(from_number)
+
+def check_draft_completeness(from_number):
+    session = user_sessions[from_number]
+    
+    if not session["client"]:
+        send_text_message(from_number, "Who is the client for this invoice?")
         return
 
-    # Initialize session
-    items = []
-    for item in data["items"]:
-        items.append({
-            "name": item["name"],
-            "quantity": item["quantity"],
-            "price": 0,
-            "total": 0
-        })
-    
-    # Try to find client
-    client_name = data.get("name")
-    client = None
-    if client_name:
-        clients = load_clients()
-        client = clients.get(client_name.lower())
-    
-    if not client:
-        client = {"name": client_name or "Customer", "email": "", "phone": from_number, "location": ""}
+    if not session["items"]:
+        send_text_message(from_number, f"Got the client: {session['client']['name']}. What are you selling and at what price?")
+        return
 
-    user_sessions[from_number] = {
-        "state": "AWAITING_PRICE",
-        "items": items,
-        "client": client,
-        "current_item_index": 0
-    }
-    
-    ask_for_price(from_number)
+    # Check for items without prices
+    for item in session["items"]:
+        if item["price"] == 0:
+            send_text_message(from_number, f"What is the price for {item['name']}?")
+            return
 
-def ask_for_price(from_number):
+    # EVERYTHING FOUND -> SHOW PREVIEW
+    show_confirmation_preview(from_number)
+
+def show_confirmation_preview(from_number):
     session = user_sessions[from_number]
-    idx = session["current_item_index"]
-    item = session["items"][idx]
+    session["state"] = "AWAITING_CONFIRMATION"
     
-    send_text_message(from_number, f"What is the price for {item['name']} (Qty: {item['quantity']})?")
+    items_text = ""
+    subtotal = 0
+    for item in session["items"]:
+        items_text += f"• {item['quantity']} {item['name']} @ ₦{item['price']:,.0f}\n"
+        subtotal += item['total']
+    
+    preview = (
+        f"📝 *Invoice Preview*\n\n"
+        f"👤 *Client:* {session['client']['name']}\n"
+        f"📦 *Items:*\n{items_text}\n"
+        f"💰 *Total:* ₦{subtotal:,.0f}\n\n"
+        f"Confirm? (Yes/Edit)"
+    )
+    send_text_message(from_number, preview)
 
-def process_price_input(from_number, text):
-    session = user_sessions.get(from_number)
-    if not session: return
+# --- BUSINESS SETUP (Keep original logic) ---
+def start_business_setup(from_number):
+    user_sessions[from_number] = {"state": "AWAITING_BIZ_NAME"}
+    send_text_message(from_number, "Business Setup: What is your Business Name?")
 
-    try:
-        # Clean price input
-        clean_text = text.replace("₦", "").replace(",", "").strip()
-        price = float(clean_text)
-        
-        idx = session["current_item_index"]
-        session["items"][idx]["price"] = price
-        session["items"][idx]["total"] = session["items"][idx]["quantity"] * price
-        
-        session["current_item_index"] += 1
-        
-        if session["current_item_index"] < len(session["items"]):
-            ask_for_price(from_number)
-        else:
-            # All prices gathered, generate PDF
-            finish_and_send_invoice(from_number)
-            
-    except ValueError:
-        send_text_message(from_number, "Invalid price. Please enter a number (e.g., 5000).")
+def process_biz_name(from_number, text):
+    user_sessions[from_number] = {"state": "AWAITING_BIZ_EMAIL", "biz_name": text}
+    send_text_message(from_number, "Business Email?")
+
+def process_biz_email(from_number, text):
+    user_sessions[from_number].update({"biz_email": text, "state": "AWAITING_BIZ_BANK1"})
+    send_text_message(from_number, "Bank details? (Bank, Acc Number, Acc Name)")
+
+def process_biz_bank1(from_number, text):
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) < 3:
+        send_text_message(from_number, "Provide Bank, Acc Number, Acc Name.")
+        return
+    user_sessions[from_number].update({"bank1": parts, "state": "AWAITING_BIZ_BANK2"})
+    send_text_message(from_number, "Second bank? (or 'none')")
+
+def process_biz_bank2(from_number, text):
+    if text.lower() != "none":
+        parts = [p.strip() for p in text.split(",")]
+        if len(parts) >= 3: user_sessions[from_number]["bank2"] = parts
+    user_sessions[from_number]["state"] = "AWAITING_REFUND_POLICY"
+    send_text_message(from_number, "Refund Policy? (or 'none')")
+
+def process_refund_policy(from_number, text):
+    session = user_sessions[from_number]
+    bank1 = session["bank1"]
+    bank2 = session.get("bank2", [None, None, None])
+    profile = {
+        "name": session["biz_name"], "email": session["biz_email"], "phone": from_number,
+        "bank1_name": bank1[0], "bank1_account": bank1[1], "bank1_account_name": bank1[2],
+        "bank2_name": bank2[0], "bank2_account": bank2[1], "bank2_account_name": bank2[2],
+        "refund_policy_text": "" if text.lower() == "none" else text, "location": "Lagos"
+    }
+    save_business_profile(from_number, profile)
+    send_text_message(from_number, "Profile saved! Type 'invoice' to start.")
+    del user_sessions[from_number]
 
 def finish_and_send_invoice(from_number):
     session = user_sessions.get(from_number)
-    if not session: return
-    
     send_text_message(from_number, "Generating your invoice... ⏳")
-    
-    company = get_company_details()
-    client = session["client"]
-    items = session["items"]
-    
-    try:
-        # Generate Invoice
-        pdf_path = generate_pdf(company, client, items)
-        
-        # Upload to Meta
-        upload_res = upload_media(pdf_path)
-        media_id = upload_res.get("id")
-        
-        if media_id:
-            send_document_message(from_number, media_id, os.path.basename(pdf_path))
-            send_text_message(from_number, "Invoice sent! ✅\nType 'receipt' if you'd like a paid receipt version.")
-            
-            # Update session to allow receipt generation
-            session["state"] = "INVOICE_SENT"
-            session["last_invoice_data"] = (company, client, items)
-        else:
-            send_text_message(from_number, "Failed to upload invoice. Please check logs.")
-            print(f"Media upload error: {upload_res}")
-            
-    except Exception as e:
-        send_text_message(from_number, f"An error occurred: {str(e)}")
-        print(f"Error generating/sending: {e}")
+    profile = get_business_profile(from_number)
+    vat_rate = session.get("vat_rate", 0.0)
+    pdf_path = generate_pdf(profile, session["client"], session["items"], vat_rate=vat_rate)
+    invoice_id = os.path.basename(pdf_path).split("_")[1].replace(".pdf", "")
+    save_invoice_record(from_number, {
+        "id": invoice_id, "client": session["client"], "items": session["items"],
+        "vat_rate": vat_rate, "total": sum(i["total"] for i in session["items"]) * (1 + vat_rate/100),
+        "is_paid": False, "timestamp": str(datetime.now())
+    })
+    media_id = upload_media(pdf_path).get("id")
+    if media_id:
+        send_document_message(from_number, media_id, os.path.basename(pdf_path))
+        send_text_message(from_number, f"Invoice {invoice_id} sent! ✅ Type 'receipt' if paid.")
+        session["state"] = "INVOICE_SENT"; session["last_invoice_id"] = invoice_id
+    else:
+        send_text_message(from_number, "Failed to upload.")
 
 def send_receipt(from_number):
     session = user_sessions.get(from_number)
-    if not session or "last_invoice_data" not in session:
-        send_text_message(from_number, "No recent invoice found to generate a receipt for.")
-        return
-        
-    company, client, items = session["last_invoice_data"]
-    
-    send_text_message(from_number, "Generating your receipt... 🧾")
-    
-    try:
-        receipt_path = generate_pdf(company, client, items, is_receipt=True)
-        upload_res = upload_media(receipt_path)
-        media_id = upload_res.get("id")
-        
-        if media_id:
-            send_document_message(from_number, media_id, os.path.basename(receipt_path))
-            # Keep state as INVOICE_SENT or reset? Let's reset for now or keep for multiple receipts if needed.
-        else:
-            send_text_message(from_number, "Failed to upload receipt.")
-    except Exception as e:
-        send_text_message(from_number, f"Error: {str(e)}")
-        print(f"Error generating/sending receipt: {e}")
+    inv_id = session.get("last_invoice_id")
+    record = get_invoice_record(from_number, inv_id)
+    mark_invoice_as_paid(from_number, inv_id)
+    profile = get_business_profile(from_number)
+    path = generate_pdf(profile, record["client"], record["items"], is_receipt=True, vat_rate=record.get("vat_rate", 0.0))
+    media_id = upload_media(path).get("id")
+    if media_id: send_document_message(from_number, media_id, os.path.basename(path))
 
 if __name__ == "__main__":
-    app.run(port=5000, debug=True)
+    app.run(port=5001, debug=True)

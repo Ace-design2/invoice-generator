@@ -38,8 +38,11 @@ def get_image_base64_html_from_path(path, height_class="h-10"):
     mime = 'image/svg+xml' if ext == '.svg' else f'image/{ext[1:]}'
     return f'<img src="data:{mime};base64,{b64_string}" class="{height_class} object-contain">'
 
-def generate_pdf(company, client, items, is_receipt=False):
-    total_amount = sum(item['total'] for item in items)
+def generate_pdf(company, client, items, is_receipt=False, vat_rate=0.0):
+    subtotal = sum(item['total'] for item in items)
+    vat_amount = subtotal * (vat_rate / 100)
+    total_amount = subtotal + vat_amount
+    
     invoice_id = str(uuid.uuid4())[:8].upper()
     date_str = datetime.now().strftime("%B %d, %Y")
     
@@ -53,6 +56,20 @@ def generate_pdf(company, client, items, is_receipt=False):
                     <div class="w-32 text-center justify-start text-black text-xs font-bold font-['Inter']">₦{item['price']:,.2f}</div>
                 </div>
             </div>"""
+
+    # --- VAT SECTION ---
+    vat_row_html = ""
+    if vat_rate > 0:
+        vat_row_html = f"""
+        <div class="self-stretch px-12 py-1 inline-flex justify-between items-center">
+            <div class="justify-start text-black text-[10px] font-normal font-['Inter']">Subtotal</div>
+            <div class="w-32 text-center text-black text-[10px] font-normal font-['Inter']">₦{subtotal:,.2f}</div>
+        </div>
+        <div class="self-stretch px-12 py-1 inline-flex justify-between items-center">
+            <div class="justify-start text-black text-[10px] font-normal font-['Inter']">VAT ({vat_rate}%)</div>
+            <div class="w-32 text-center text-black text-[10px] font-normal font-['Inter']">₦{vat_amount:,.2f}</div>
+        </div>
+        """
 
     bank1_name = company.get("bank1_name", "")
     bank1_display = f"{get_bank_logo_html(bank1_name)}<span>{bank1_name}</span>" if bank1_name else ""
@@ -129,9 +146,9 @@ def generate_pdf(company, client, items, is_receipt=False):
             </div>
         </div>
         <div class="inline-flex flex-col justify-center items-end gap-3">
-            <div class="justify-start text-black text-xs font-bold font-['Inter']">{company.get('name') or 'COMPANY DETAILS'}</div>
+            <div class="justify-start text-black text-xs font-bold font-['Inter']">BUSINESS DETAILS</div>
             <div class="flex flex-col justify-center items-end gap-1">
-                <div class="justify-start text-black text-xs font-normal font-['Inter']">{company.get('contact_name', '')}</div>
+                <div class="justify-start text-black text-xs font-bold font-['Inter']">{company.get('name', '')}</div>
                 <div class="justify-start text-black text-xs font-normal font-['Inter']">{company.get('email', '')}</div>
                 <div class="justify-start text-black text-xs font-normal font-['Inter']">{company.get('phone', '')}</div>
                 <div class="justify-start text-black text-xs font-normal font-['Inter']">{company.get('location', '')}</div>
@@ -155,6 +172,9 @@ def generate_pdf(company, client, items, is_receipt=False):
             {items_html}
         </div>
     </div>
+    
+    {vat_row_html}
+    
     <div class="self-stretch px-12 py-2 inline-flex justify-between items-center">
         <div class="justify-start text-black text-xs font-bold font-['Inter']">TOTAL</div>
         <div class="flex justify-start items-start gap-16">

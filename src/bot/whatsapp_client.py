@@ -25,7 +25,9 @@ def send_text_message(to, text):
         "text": {"body": text}
     }
     response = requests.post(url, headers=headers, json=data)
-    return response.json()
+    res_json = response.json()
+    print(f"DEBUG: WhatsApp API Response (Text): {json.dumps(res_json, indent=2)}")
+    return res_json
 
 def upload_media(file_path):
     url = f"https://graph.facebook.com/{API_VERSION}/{PHONE_NUMBER_ID}/media"
@@ -39,7 +41,9 @@ def upload_media(file_path):
         "messaging_product": "whatsapp"
     }
     response = requests.post(url, headers=headers, files=files, data=data)
-    return response.json()
+    res_json = response.json()
+    print(f"DEBUG: WhatsApp API Response (Media): {json.dumps(res_json, indent=2)}")
+    return res_json
 
 def send_document_message(to, media_id, filename):
     url = f"{BASE_URL}/messages"
@@ -58,4 +62,6 @@ def send_document_message(to, media_id, filename):
         }
     }
     response = requests.post(url, headers=headers, json=data)
-    return response.json()
+    res_json = response.json()
+    print(f"DEBUG: WhatsApp API Response (Document): {json.dumps(res_json, indent=2)}")
+    return res_json
