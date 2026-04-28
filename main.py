@@ -112,7 +112,14 @@ def main():
         company = setup_company()
         
         print("\n--- Create Invoice ---")
-        msg = input("Enter invoice command (NLP) or press Enter for manual: ").strip()
+        print("Enter invoice command (NLP). Press Enter on an empty line to finish, or just press Enter for manual:")
+        lines = []
+        while True:
+            line = input().strip()
+            if not line:
+                break
+            lines.append(line)
+        msg = "\n".join(lines)
         
         if msg:
             data = extract_invoice_data(msg)

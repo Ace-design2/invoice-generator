@@ -16,27 +16,31 @@ def extract_invoice_data(message):
     
     # 1. Extract Person/Company Name (Strict)
     # Priority 1: Explicit markers "for", "to", "client is"
-    # Refined to avoid catching "for" twice or catching "to" as part of the name
     match_explicit = re.search(r'(?:for|to|client|customer)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)(?:\s+(?:for|at|with|and|is)\b|\s*$)', message)
     if match_explicit:
         name = match_explicit.group(1).strip()
-        message_for_items = message.replace(match_explicit.group(0), " ") # Replace with space to maintain separation
+        message_for_items = message.replace(match_explicit.group(0), " ")
     else:
+        # Priority 2: spaCy NER - only if we don't have explicit markers
+        # AND only if it's very likely a name (not matching item patterns)
         message_for_items = message
-        for ent in doc.ents:
-            if ent.label_ in ["PERSON", "ORG"]:
-                if not any(word in ent.text.lower() for word in ["refill", "soap", "roll", "plastic", "morn", "milo"]):
-                    name = ent.text
-                    message_for_items = message.replace(name, "")
-                    break
+        # If the message is short and looks like a list, don't guess names from NER
+        if len(message.split('\n')) > 1 or ',' in message:
+             pass 
+        else:
+            for ent in doc.ents:
+                if ent.label_ in ["PERSON", "ORG"]:
+                    if not any(char.isdigit() for char in ent.text):
+                        if not any(word in ent.text.lower() for word in ["refill", "soap", "roll", "plastic", "morn", "milo", "pizza", "burger", "laptop", "macbook", "iphone", "mouse", "hub"]):
+                            name = ent.text
+                            message_for_items = message.replace(name, " ")
+                            break
 
     # Clean up command words from the start
     message_for_items = re.sub(r'^(?:generate|create|send|make)\s+(?:an?\s+)?(?:invoice|receipt)\s+(?:for\s+)?', '', message_for_items, flags=re.IGNORECASE).strip()
 
-    clean_msg_for_items = message_for_items.replace(",", "")
-    
-    # Split by common separators to process items individually
-    segments = re.split(r'and|,|\n', clean_msg_for_items, flags=re.IGNORECASE)
+    # Split by common separators BEFORE removing commas from prices
+    segments = re.split(r'and|,|\n|;', message_for_items, flags=re.IGNORECASE)
     
     for segment in segments:
         segment = segment.strip()
@@ -70,6 +74,14 @@ def extract_invoice_data(message):
                 items_extracted.append({"name": item, "quantity": 1, "price": price, "total": price})
             continue
 
+        # Pattern D: [Price] [Item] (e.g. "15000 Sneakers")
+        match_d = re.search(r'^(₦?[\d,kK]+)\s+([a-zA-Z\s]{2,20})$', segment, re.IGNORECASE)
+        if match_d:
+            price = parse_price(match_d.group(1))
+            item = match_d.group(2).strip()
+            items_extracted.append({"name": item, "quantity": 1, "price": price, "total": price})
+            continue
+
         # Fallback: [Qty] [Item]
         match_f = re.search(r'^(\d+)\s+([a-zA-Z\s]{2,20})$', segment, re.IGNORECASE)
         if match_f:
@@ -77,6 +89,15 @@ def extract_invoice_data(message):
             item = match_f.group(2).strip()
             if name and item.lower() in name.lower(): continue
             items_extracted.append({"name": item, "quantity": qty, "price": 0, "total": 0})
+            continue
+
+        # Ultimate Fallback: Just [Item Name]
+        if len(segment) > 1 and not segment.isdigit():
+            # Avoid matching name as item
+            if name and segment.lower() in name.lower(): continue
+            # Avoid matching common filler words
+            if segment.lower() in ["and", "for", "the", "with"]: continue
+            items_extracted.append({"name": segment, "quantity": 1, "price": 0, "total": 0})
 
     return {"name": name, "items": items_extracted}
 
