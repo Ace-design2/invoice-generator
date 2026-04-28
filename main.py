@@ -122,17 +122,23 @@ def main():
             items = []
             if data.get('items'):
                 for ext_item in data['items']:
-                    price_input = input(f"Price for {ext_item['name']} (Qty: {ext_item['quantity']}): ₦").strip()
-                    try:
-                        price = float(price_input)
+                    if ext_item.get('price') and ext_item['price'] > 0:
+                        price = ext_item['price']
+                        print(f"Using parsed price for {ext_item['name']}: ₦{price:,.2f}")
+                    else:
+                        price_input = input(f"Price for {ext_item['name']} (Qty: {ext_item['quantity']}): ₦").strip()
+                        try:
+                            price = float(price_input)
+                        except ValueError:
+                            price = 0
+                    
+                    if price > 0:
                         items.append({
                             'name': ext_item['name'],
                             'quantity': ext_item['quantity'],
                             'price': price,
                             'total': ext_item['quantity'] * price
                         })
-                    except ValueError:
-                        pass
             elif data.get('amount'):
                 items = [{
                     'name': 'Custom Order',

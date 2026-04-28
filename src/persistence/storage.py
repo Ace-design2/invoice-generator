@@ -5,6 +5,7 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__
 BUSINESSES_FILE = os.path.join(DATA_DIR, "businesses.json")
 CLIENTS_FILE = os.path.join(DATA_DIR, "clients.json")
 INVOICES_FILE = os.path.join(DATA_DIR, "invoices.json")
+COMPANY_DETAILS_FILE = os.path.join(DATA_DIR, "company_details.json")
 
 def load_json(file_path):
     if os.path.exists(file_path):
@@ -20,6 +21,39 @@ def save_json(file_path, data):
     with open(file_path, 'w') as f:
         json.dump(data, f, indent=4)
 
+# --- SINGLE USER COMPATIBILITY (for main.py) ---
+def get_company_details():
+    return load_json(COMPANY_DETAILS_FILE)
+
+def save_company_details(company):
+    save_json(COMPANY_DETAILS_FILE, company)
+
+def load_clients(owner_phone=None):
+    all_clients = load_json(CLIENTS_FILE)
+    if owner_phone is None:
+        # Fallback for main.py: return the first business's clients or empty dict
+        # Actually, main.py expects a flat dict of clients
+        # Let's check if CLIENTS_FILE is already multi-tenant
+        if all_clients and any(isinstance(v, dict) for v in all_clients.values()):
+             # It is multi-tenant, return 'default' or first key
+             return all_clients.get('default', {})
+        return all_clients
+    return all_clients.get(owner_phone, {})
+
+def save_clients(clients, owner_phone=None):
+    if owner_phone is None:
+        # If it's multi-tenant, save to 'default'
+        all_clients = load_json(CLIENTS_FILE)
+        if all_clients and any(isinstance(v, dict) for v in all_clients.values()):
+            all_clients['default'] = clients
+            save_json(CLIENTS_FILE, all_clients)
+        else:
+            save_json(CLIENTS_FILE, clients)
+    else:
+        all_clients = load_json(CLIENTS_FILE)
+        all_clients[owner_phone] = clients
+        save_json(CLIENTS_FILE, all_clients)
+
 # --- BUSINESS PROFILES ---
 def get_business_profile(owner_phone):
     businesses = load_json(BUSINESSES_FILE)
@@ -31,9 +65,7 @@ def save_business_profile(owner_phone, profile):
     save_json(BUSINESSES_FILE, businesses)
 
 # --- CLIENTS (Scoped per Business) ---
-def load_clients(owner_phone):
-    all_clients = load_json(CLIENTS_FILE)
-    return all_clients.get(owner_phone, {})
+# Note: load_clients and save_clients are now handled above
 
 def save_client(owner_phone, client_data):
     all_clients = load_json(CLIENTS_FILE)
