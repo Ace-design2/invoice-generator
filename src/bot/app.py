@@ -91,6 +91,8 @@ def handle_message(from_number, text):
         if state == "AWAITING_REFUND_POLICY": process_refund_policy(from_number, text); return
 
         # --- Conversational Invoice Flow ---
+        if state == "AWAITING_CLIENT_NAME": process_client_name(from_number, text); return
+        if state == "AWAITING_ITEM_PRICE": process_item_price(from_number, text); return
         if state == "AWAITING_CONFIRMATION":
             if text_lower in ["yes", "y", "confirm", "ok", "send"]:
                 session["state"] = "AWAITING_VAT_CHOICE"
@@ -154,10 +156,48 @@ def process_data_input(from_number, text):
     # CHECK COMPLETENESS
     check_draft_completeness(from_number)
 
+def process_client_name(from_number, text):
+    session = user_sessions.get(from_number)
+    if not session: return
+    
+    # Simple logic: the whole text is the name
+    client = {"name": text.strip(), "email": "", "phone": "", "location": ""}
+    save_client(from_number, client)
+    session["client"] = client
+    session["state"] = "COLLECTING_DATA"
+    
+    check_draft_completeness(from_number)
+
+def process_item_price(from_number, text):
+    session = user_sessions.get(from_number)
+    if not session: return
+
+    try:
+        clean_text = text.replace("₦", "").replace(",", "").strip()
+        if clean_text.lower().endswith('k'):
+            price = float(clean_text[:-1]) * 1000
+        else:
+            price = float(clean_text)
+        
+        # Find the first item that is missing a price and update it
+        for item in session["items"]:
+            if item["price"] == 0:
+                item["price"] = price
+                item["total"] = item["quantity"] * price
+                break
+        
+        session["state"] = "COLLECTING_DATA"
+    except ValueError:
+        send_text_message(from_number, "I didn't catch that price. Please enter a number (e.g. 5000 or 5k).")
+        return
+
+    check_draft_completeness(from_number)
+
 def check_draft_completeness(from_number):
     session = user_sessions[from_number]
     
     if not session["client"]:
+        session["state"] = "AWAITING_CLIENT_NAME"
         send_text_message(from_number, "Who is the client for this invoice?")
         return
 
@@ -169,6 +209,7 @@ def check_draft_completeness(from_number):
     # Check for items without prices
     for item in session["items"]:
         if item["price"] == 0:
+            session["state"] = "AWAITING_ITEM_PRICE"
             send_text_message(from_number, f"What is the price for {item['name']}?")
             return
 

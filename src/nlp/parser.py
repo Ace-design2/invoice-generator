@@ -74,14 +74,6 @@ def extract_invoice_data(message):
                 items_extracted.append({"name": item, "quantity": 1, "price": price, "total": price})
             continue
 
-        # Pattern D: [Price] [Item] (e.g. "15000 Sneakers")
-        match_d = re.search(r'^(₦?[\d,kK]+)\s+([a-zA-Z\s]{2,20})$', segment, re.IGNORECASE)
-        if match_d:
-            price = parse_price(match_d.group(1))
-            item = match_d.group(2).strip()
-            items_extracted.append({"name": item, "quantity": 1, "price": price, "total": price})
-            continue
-
         # Fallback: [Qty] [Item]
         match_f = re.search(r'^(\d+)\s+([a-zA-Z\s]{2,20})$', segment, re.IGNORECASE)
         if match_f:
@@ -89,6 +81,14 @@ def extract_invoice_data(message):
             item = match_f.group(2).strip()
             if name and item.lower() in name.lower(): continue
             items_extracted.append({"name": item, "quantity": qty, "price": 0, "total": 0})
+            continue
+
+        # Pattern D: [Price] [Item] (e.g. "15000 Sneakers")
+        match_d = re.search(r'^(₦?[\d,kK]+)\s+([a-zA-Z\s]{2,20})$', segment, re.IGNORECASE)
+        if match_d:
+            price = parse_price(match_d.group(1))
+            item = match_d.group(2).strip()
+            items_extracted.append({"name": item, "quantity": 1, "price": price, "total": price})
             continue
 
         # Ultimate Fallback: Just [Item Name]
