@@ -137,7 +137,7 @@ def generate_pdf(company, client, items, is_receipt=False, vat_rate=0.0):
     </div>
     <div class="self-stretch px-6 inline-flex justify-between items-start">
         <div class="inline-flex flex-col justify-center items-start gap-3">
-            <div class="justify-start text-black text-xs font-bold font-['Inter']">CUSTOMER DETAILS</div>
+            <div class="justify-start text-black text-xs font-bold font-['Inter']">BILL TO</div>
             <div class="flex flex-col justify-center items-start gap-1">
                 <div class="justify-start text-black text-xs font-normal font-['Inter']">{client.get('name', '')}</div>
                 <div class="justify-start text-black text-xs font-normal font-['Inter']">{client.get('email', '')}</div>
@@ -146,7 +146,7 @@ def generate_pdf(company, client, items, is_receipt=False, vat_rate=0.0):
             </div>
         </div>
         <div class="inline-flex flex-col justify-center items-end gap-3">
-            <div class="justify-start text-black text-xs font-bold font-['Inter']">BUSINESS DETAILS</div>
+            <div class="justify-start text-black text-xs font-bold font-['Inter']">BILL FROM</div>
             <div class="flex flex-col justify-center items-end gap-1">
                 <div class="justify-start text-black text-xs font-bold font-['Inter']">{company.get('name', '')}</div>
                 <div class="justify-start text-black text-xs font-normal font-['Inter']">{company.get('email', '')}</div>
