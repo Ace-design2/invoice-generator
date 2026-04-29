@@ -4,14 +4,17 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
-from src.nlp.parser import extract_invoice_data
+from src.nlp.parser import extract_invoice_data, extract_invoice_data_multimodal
 from src.core.generator import generate_pdf
 from src.persistence.storage import (
     get_business_profile, save_business_profile, 
     load_clients, save_client,
     save_invoice_record, get_invoice_record, mark_invoice_as_paid
 )
-from src.bot.whatsapp_client import send_text_message, upload_media, send_document_message
+from src.bot.whatsapp_client import (
+    send_text_message, upload_media, send_document_message,
+    get_media_url, download_media
+)
 
 load_dotenv()
 
@@ -45,11 +48,74 @@ def webhook():
                 if messages:
                     msg = messages[0]
                     from_number = msg.get("from")
-                    msg_text = msg.get("text", {}).get("body", "").strip()
-                    if msg_text:
-                        handle_message(from_number, msg_text)
+                    msg_type = msg.get("type")
+                    
+                    if msg_type == "text":
+                        msg_text = msg.get("text", {}).get("body", "").strip()
+                        if msg_text:
+                            handle_message(from_number, msg_text)
+                    elif msg_type == "image":
+                        handle_media_message(from_number, msg.get("image", {}), "image")
+                    elif msg_type in ["audio", "voice"]:
+                        handle_media_message(from_number, msg.get("audio", {}), "audio")
         return "OK", 200
     return "Not Found", 404
+
+def handle_media_message(from_number, media_obj, media_type):
+    media_id = media_obj.get("id")
+    mime_type = media_obj.get("mime_type")
+    
+    send_text_message(from_number, f"Got your {media_type}! Processing... ⏳")
+    
+    # 1. Get URL
+    media_url = get_media_url(media_id)
+    if not media_url:
+        send_text_message(from_number, "Failed to retrieve media. Please try again.")
+        return
+
+    # 2. Download
+    ext = mime_type.split("/")[-1].split(";")[0]
+    # Handle some common mime types
+    if "ogg" in ext: ext = "ogg"
+    elif "jpeg" in ext: ext = "jpg"
+    
+    temp_path = f"assets/temp_media/{media_id}.{ext}"
+    download_media(media_url, temp_path)
+    
+    # 3. Parse with Gemini
+    try:
+        data = extract_invoice_data_multimodal(temp_path, mime_type)
+        
+        # 4. Process like a text message (update session)
+        process_parsed_data(from_number, data)
+        
+        # Cleanup
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+    except Exception as e:
+        print(f"Error processing multimodal: {e}")
+        send_text_message(from_number, "Sorry, I couldn't understand that media. Could you try typing the details?")
+
+def process_parsed_data(from_number, data):
+    session = user_sessions.get(from_number)
+    if not session or session.get("state") == "INVOICE_SENT":
+        session = {"state": "COLLECTING_DATA", "items": [], "client": None}
+        user_sessions[from_number] = session
+
+    # Update Client
+    if data.get("name") and not session.get("client"):
+        clients = load_clients(from_number)
+        client = clients.get(data["name"].lower())
+        if not client:
+            client = {"name": data["name"], "email": "", "phone": "", "location": ""}
+            save_client(from_number, client)
+        session["client"] = client
+
+    # Update Items
+    if data.get("items"):
+        session["items"].extend(data["items"])
+
+    check_draft_completeness(from_number)
 
 def handle_message(from_number, text):
     session = user_sessions.get(from_number)

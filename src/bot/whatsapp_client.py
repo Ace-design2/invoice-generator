@@ -65,3 +65,23 @@ def send_document_message(to, media_id, filename):
     res_json = response.json()
     print(f"DEBUG: WhatsApp API Response (Document): {json.dumps(res_json, indent=2)}")
     return res_json
+
+def get_media_url(media_id):
+    url = f"https://graph.facebook.com/{API_VERSION}/{media_id}"
+    headers = {
+        "Authorization": f"Bearer {ACCESS_TOKEN}"
+    }
+    response = requests.get(url, headers=headers)
+    res_json = response.json()
+    print(f"DEBUG: WhatsApp API Media Info: {json.dumps(res_json, indent=2)}")
+    return res_json.get("url")
+
+def download_media(media_url, save_path):
+    headers = {
+        "Authorization": f"Bearer {ACCESS_TOKEN}"
+    }
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    response = requests.get(media_url, headers=headers)
+    with open(save_path, "wb") as f:
+        f.write(response.content)
+    return save_path
