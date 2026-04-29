@@ -23,7 +23,7 @@ def extract_invoice_data(message):
         return {"name": None, "items": []}
 
 def extract_invoice_data_gemini(message):
-    model = genai.GenerativeModel('gemini-2.0-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash')
     
     prompt = f"""
     Extract invoice details from this user message: "{message}"
