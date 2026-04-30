@@ -5,23 +5,24 @@ def validate_add_item(entities):
     """
     items = entities.get("items", [])
     if not items:
-        return False, "Item details are missing.", None
+        return False, "Item details are missing.", [], []
         
+    valid_items = []
+    invalid_items = []
+    
     for item in items:
         if not item.get("name"):
-            return False, "Item name is missing.", item
+            continue
             
         price_missing = item.get("price") is None or item.get("price") < 0
         qty_missing = item.get("quantity") is None or item.get("quantity") <= 0
         
-        if price_missing and qty_missing:
-            return False, f"Please provide the quantity and price for '{item.get('name')}' in this format: (quantity, singleprice)", item
-        elif price_missing:
-            return False, f"Please provide the price for '{item.get('name')}'.", item
-        elif qty_missing:
-            return False, f"Please provide the quantity for '{item.get('name')}'.", item
+        if price_missing or qty_missing:
+            invalid_items.append(item)
+        else:
+            valid_items.append(item)
             
-    return True, "", None
+    return True, "", valid_items, invalid_items
 
 def validate_update_item(entities):
     if not entities.get("target_item_name"):

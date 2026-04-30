@@ -163,17 +163,20 @@ def process_intent(from_number, data, original_text=""):
         return
 
     # Check if we are waiting for missing details
-    pending_item = session.get("pending_item_fix")
-    if pending_item:
+    queue = session.get("pending_item_fixes", [])
+    if queue:
         text_lower = original_text.lower()
-        if text_lower in ["cancel", "stop", "nevermind", "never mind"]:
-            session["pending_item_fix"] = None
+        if text_lower in ["cancel", "stop", "nevermind", "never mind", "skip"]:
+            queue.pop(0)
+            session["pending_item_fixes"] = queue
             send_text_message(from_number, "Okay, skipped that item.")
+            process_pending_item_fixes(from_number)
             return
             
         import re
         nums = re.findall(r'\d+', text_lower.replace("k", "000").replace(",", ""))
         if nums:
+            pending_item = queue[0]
             price_missing = pending_item.get("price") is None or pending_item.get("price") < 0
             qty_missing = pending_item.get("quantity") is None or pending_item.get("quantity") <= 0
             
@@ -188,12 +191,11 @@ def process_intent(from_number, data, original_text=""):
                 pending_item["price"] = float(nums[0])
                 pending_item["quantity"] = 1
                 
-            session["pending_item_fix"] = None
-            entities = {"items": [pending_item]}
-            handle_add_item(from_number, entities)
+            queue.pop(0)
+            session["pending_item_fixes"] = queue
+            session_manager.add_item(from_number, pending_item)
+            process_pending_item_fixes(from_number)
             return
-        else:
-            session["pending_item_fix"] = None
 
     intent = data.get("intent", "unknown")
     confidence = data.get("confidence", 1.0)
@@ -227,7 +229,7 @@ def process_intent(from_number, data, original_text=""):
         send_text_message(from_number, f"Error: {str(e)}")
 
 def handle_add_item(from_number, entities, is_create=False):
-    is_valid, err, error_item = validate_add_item(entities)
+    is_valid, err, valid_items, invalid_items = validate_add_item(entities)
     
     # If starting a new invoice but no items found, just set client
     if not is_valid and is_create and entities.get("client_name"):
@@ -236,25 +238,47 @@ def handle_add_item(from_number, entities, is_create=False):
         return
         
     if not is_valid:
-        if error_item:
-            session = session_manager.get_session(from_number)
-            session["pending_item_fix"] = error_item
         send_text_message(from_number, err)
         return
         
-    for item in entities["items"]:
-        success, msg = session_manager.add_item(from_number, item)
-        if not success:
-            send_text_message(from_number, msg)
-            return
+    for item in valid_items:
+        session_manager.add_item(from_number, item)
     
     if entities.get("client_name"):
         session_manager.set_client(from_number, {"name": entities["client_name"]})
         
     session = session_manager.get_session(from_number)
-    client_name = session['invoice']['client']['name'] if session['invoice']['client'] else None
-    client_text = f" for {client_name}" if client_name else ""
-    send_text_message(from_number, f"Item(s) added{client_text}. Current total is ₦{session['invoice']['total']:,.0f}.\n\nSay 'send it' when you're done, or keep adding/editing items.")
+    
+    if invalid_items:
+        queue = session.get("pending_item_fixes", [])
+        queue.extend(invalid_items)
+        session["pending_item_fixes"] = queue
+        
+    process_pending_item_fixes(from_number)
+
+def process_pending_item_fixes(from_number):
+    session = session_manager.get_session(from_number)
+    queue = session.get("pending_item_fixes", [])
+    
+    if queue:
+        next_item = queue[0]
+        price_missing = next_item.get("price") is None or next_item.get("price") < 0
+        qty_missing = next_item.get("quantity") is None or next_item.get("quantity") <= 0
+        
+        if price_missing and qty_missing:
+            msg = f"Please provide the quantity and price for '{next_item.get('name')}' in this format: (quantity, singleprice)"
+        elif price_missing:
+            msg = f"Please provide the price for '{next_item.get('name')}'."
+        elif qty_missing:
+            msg = f"Please provide the quantity for '{next_item.get('name')}'."
+            
+        send_text_message(from_number, msg)
+    else:
+        invoice = session.get("invoice", {})
+        if invoice.get("items"):
+            client_name = invoice.get("client", {}).get("name") if invoice.get("client") else None
+            client_text = f" for {client_name}" if client_name else ""
+            send_text_message(from_number, f"Item(s) added{client_text}. Current total is ₦{invoice.get('total', 0):,.0f}.\n\nSay 'send it' when you're done, or keep adding/editing items.")
 
 def handle_update_item(from_number, entities):
     is_valid, err = validate_update_item(entities)
