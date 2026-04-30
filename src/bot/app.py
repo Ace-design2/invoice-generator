@@ -4,7 +4,7 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
-from src.nlp.parser import extract_invoice_data, extract_invoice_data_multimodal
+from src.nlp.parser import extract_intent, extract_intent_multimodal
 from src.core.generator import generate_pdf
 from src.persistence.storage import (
     get_business_profile, save_business_profile, 
@@ -15,18 +15,20 @@ from src.bot.whatsapp_client import (
     send_text_message, upload_media, send_document_message,
     get_media_url, download_media
 )
+from src.bot.state_manager import session_manager
+from src.bot.validation import (
+    validate_add_item, validate_update_item, validate_remove_item,
+    validate_invoice_for_sending, check_confidence
+)
 
 load_dotenv()
 
 app = Flask(__name__)
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 
-# Simple session management (In-memory)
-user_sessions = {}
-
 @app.route("/privacy")
 def privacy():
-    return """<html><body style='font-family:sans-serif;padding:40px;'><h1>Privacy Policy</h1><p>We only process data to generate invoices.</p></body></html>""", 200
+    return "<html><body style='font-family:sans-serif;padding:40px;'><h1>Privacy Policy</h1><p>We only process data to generate invoices.</p></body></html>", 200
 
 @app.route("/webhook", methods=["GET"])
 def verify():
@@ -67,251 +69,237 @@ def handle_media_message(from_number, media_obj, media_type):
     
     send_text_message(from_number, f"Got your {media_type}! Processing... ⏳")
     
-    # 1. Get URL
     media_url = get_media_url(media_id)
     if not media_url:
         send_text_message(from_number, "Failed to retrieve media. Please try again.")
         return
 
-    # 2. Download
     ext = mime_type.split("/")[-1].split(";")[0]
-    # Handle some common mime types
     if "ogg" in ext: ext = "ogg"
     elif "jpeg" in ext: ext = "jpg"
     
+    os.makedirs("assets/temp_media", exist_ok=True)
     temp_path = f"assets/temp_media/{media_id}.{ext}"
     download_media(media_url, temp_path)
     
-    # 3. Parse with Gemini
     try:
-        data = extract_invoice_data_multimodal(temp_path, mime_type)
-        
-        # 4. Process like a text message (update session)
-        process_parsed_data(from_number, data)
-        
-        # Cleanup
+        data = extract_intent_multimodal(temp_path, mime_type)
+        process_intent(from_number, data, original_text=f"[{media_type} message]")
         if os.path.exists(temp_path):
             os.remove(temp_path)
     except Exception as e:
         print(f"Error processing multimodal: {e}")
         send_text_message(from_number, "Sorry, I couldn't understand that media. Could you try typing the details?")
 
-def process_parsed_data(from_number, data):
-    session = user_sessions.get(from_number)
-    if not session or session.get("state") == "INVOICE_SENT":
-        session = {"state": "COLLECTING_DATA", "items": [], "client": None}
-        user_sessions[from_number] = session
-
-    # Update Client
-    if data.get("name") and not session.get("client"):
-        clients = load_clients(from_number)
-        client = clients.get(data["name"].lower())
-        if not client:
-            client = {"name": data["name"], "email": "", "phone": "", "location": ""}
-            save_client(from_number, client)
-        session["client"] = client
-
-    # Update Items
-    if data.get("items"):
-        session["items"].extend(data["items"])
-
-    check_draft_completeness(from_number)
-
 def handle_message(from_number, text):
-    session = user_sessions.get(from_number)
     text_lower = text.lower()
     
-    # 1. AUTH & PROFILE CHECK
     profile = get_business_profile(from_number)
+    
+    # We use a secondary lightweight session just for the business setup phase, 
+    # since session_manager is optimized for the invoice flow.
+    # To keep it clean, we'll store setup state in memory locally.
+    global setup_sessions
+    if 'setup_sessions' not in globals():
+        setup_sessions = {}
+        
+    setup_state = setup_sessions.get(from_number, {}).get("state", "")
+    
     if not profile and text_lower not in ["start", "invoice", "hi", "hello"]:
-        # Check if they are in the middle of any business setup state
-        is_setup_state = session and ("BIZ" in session.get("state", "") or "REFUND" in session.get("state", ""))
-        if is_setup_state:
-            pass 
+        if "AWAITING" in setup_state:
+            pass # allow setup to continue
         else:
             send_text_message(from_number, "Welcome! Please set up your business profile first.\n\nType 'start' to begin.")
             return
 
-    # 2. GLOBAL TRIGGERS
-    if text_lower in ["start", "hi", "hello", "new", "reset"]:
-        if not profile:
-            start_business_setup(from_number)
-        else:
-            user_sessions[from_number] = {"state": "COLLECTING_DATA", "items": [], "client": None}
-            send_text_message(from_number, "Let's create an invoice! 📝\n\nWho is the client, and what are you selling? (e.g., '2 laptops for Segun at 300k')")
+    if text_lower in ["start", "hi", "hello", "new", "reset"] and not profile:
+        start_business_setup(from_number)
         return
 
-    if text_lower == "receipt" and session and session.get("state") == "INVOICE_SENT":
+    # Check if in setup mode
+    if "AWAITING" in setup_state:
+        if setup_state == "AWAITING_BIZ_NAME": process_biz_name(from_number, text); return
+        if setup_state == "AWAITING_BIZ_EMAIL": process_biz_email(from_number, text); return
+        if setup_state == "AWAITING_BIZ_BANK1": process_biz_bank1(from_number, text); return
+        if setup_state == "AWAITING_BIZ_BANK2": process_biz_bank2(from_number, text); return
+        if setup_state == "AWAITING_REFUND_POLICY": process_refund_policy(from_number, text); return
+
+    if text_lower == "receipt":
         send_receipt(from_number)
         return
 
-    # 3. STATE MACHINE
-    if session:
-        state = session.get("state")
-        
-        # --- Profile Setup ---
-        if state == "AWAITING_BIZ_NAME": process_biz_name(from_number, text); return
-        if state == "AWAITING_BIZ_EMAIL": process_biz_email(from_number, text); return
-        if state == "AWAITING_BIZ_BANK1": process_biz_bank1(from_number, text); return
-        if state == "AWAITING_BIZ_BANK2": process_biz_bank2(from_number, text); return
-        if state == "AWAITING_REFUND_POLICY": process_refund_policy(from_number, text); return
-
-        # --- Conversational Invoice Flow ---
-        if state == "AWAITING_CLIENT_NAME": process_client_name(from_number, text); return
-        if state == "AWAITING_ITEM_PRICE": process_item_price(from_number, text); return
-        if state == "AWAITING_CONFIRMATION":
-            if text_lower in ["yes", "y", "confirm", "ok", "send"]:
-                session["state"] = "AWAITING_VAT_CHOICE"
-                send_text_message(from_number, "Add 7.5% VAT? (Yes/No)")
-            elif text_lower in ["no", "edit", "change"]:
-                send_text_message(from_number, "What would you like to change? (e.g., 'Price is 50k' or 'Client is John')")
-            else:
-                # Treat as an edit
-                process_data_input(from_number, text)
-            return
-
-        if state == "AWAITING_VAT_CHOICE":
-            session["vat_rate"] = 7.5 if text_lower in ["yes", "y"] else 0.0
-            finish_and_send_invoice(from_number)
-            return
-
-    # Default: Process as data input
-    process_data_input(from_number, text)
-
-def process_data_input(from_number, text):
-    session = user_sessions.get(from_number)
-    if not session or session.get("state") == "INVOICE_SENT":
-        session = {"state": "COLLECTING_DATA", "items": [], "client": None}
-        user_sessions[from_number] = session
-
-    # Parse the input
-    data = extract_invoice_data(text)
+    # 1. NLP Intent Extraction
+    data = extract_intent(text)
     
-    # Update Client if found (and not already set)
-    if data.get("name") and not session.get("client"):
-        clients = load_clients(from_number)
-        client = clients.get(data["name"].lower())
-        if not client:
-            client = {"name": data["name"], "email": "", "phone": "", "location": ""}
-            save_client(from_number, client)
-        session["client"] = client
+    # 2. Logging & Debugging (Phase 11)
+    print(f"--- LOG ---")
+    print(f"USER: {text}")
+    print(f"INTENT: {json.dumps(data, indent=2)}")
+    print(f"-----------")
 
-    # Update Items if found
-    if data.get("items"):
-        session["items"].extend(data["items"])
+    # 3. Process Intent
+    process_intent(from_number, data, original_text=text)
 
-    # If user sent just a number and we are missing a price
-    if not data.get("items") and session["items"]:
-        try:
-            clean_text = text.replace("₦", "").replace(",", "").strip()
-            # Handle "10k" or "500"
-            if clean_text.lower().endswith('k'):
-                price = float(clean_text[:-1]) * 1000
-            else:
-                price = float(clean_text)
-            
-            # Find the first item that is missing a price and update it
-            for item in session["items"]:
-                if item["price"] == 0:
-                    item["price"] = price
-                    item["total"] = item["quantity"] * price
-                    break
-        except ValueError:
-            pass
-
-    # CHECK COMPLETENESS
-    check_draft_completeness(from_number)
-
-def process_client_name(from_number, text):
-    session = user_sessions.get(from_number)
-    if not session: return
+def process_intent(from_number, data, original_text=""):
+    session = session_manager.get_session(from_number)
     
-    # Simple logic: the whole text is the name
-    client = {"name": text.strip(), "email": "", "phone": "", "location": ""}
-    save_client(from_number, client)
-    session["client"] = client
-    session["state"] = "COLLECTING_DATA"
-    
-    check_draft_completeness(from_number)
+    # Phase 4: Confirmation System
+    if session["status"] == "awaiting_confirmation":
+        text_lower = original_text.lower()
+        if text_lower in ["yes", "y", "confirm", "ok", "send", "do it"]:
+            execute_pending_action(from_number)
+        elif text_lower in ["no", "n", "cancel", "stop", "edit"]:
+            session_manager.clear_pending_action(from_number)
+            send_text_message(from_number, "Action cancelled. You can continue editing the invoice.")
+        else:
+            send_text_message(from_number, "Please reply YES to confirm or NO to cancel.")
+        return
 
-def process_item_price(from_number, text):
-    session = user_sessions.get(from_number)
-    if not session: return
+    intent = data.get("intent", "unknown")
+    confidence = data.get("confidence", 1.0)
+    entities = data.get("entities", {})
+
+    if not check_confidence(confidence):
+        send_text_message(from_number, "I didn't quite catch that. Could you rephrase what you want to do with the invoice?")
+        return
 
     try:
-        clean_text = text.replace("₦", "").replace(",", "").strip()
-        if clean_text.lower().endswith('k'):
-            price = float(clean_text[:-1]) * 1000
+        if intent == "create_invoice":
+            session_manager.reset_session(from_number)
+            handle_add_item(from_number, entities, is_create=True)
+        elif intent == "add_item":
+            handle_add_item(from_number, entities)
+        elif intent == "update_item":
+            handle_update_item(from_number, entities)
+        elif intent == "remove_item":
+            handle_remove_item(from_number, entities)
+        elif intent == "set_client":
+            handle_set_client(from_number, entities)
+        elif intent in ["preview_invoice", "confirm_invoice", "send_invoice"]:
+            handle_preview_and_confirm(from_number)
+        elif intent == "cancel_invoice":
+            session_manager.set_pending_action(from_number, "cancel_invoice")
+            send_text_message(from_number, "Are you sure you want to cancel and clear this invoice? (YES/NO)")
         else:
-            price = float(clean_text)
-        
-        # Find the first item that is missing a price and update it
-        for item in session["items"]:
-            if item["price"] == 0:
-                item["price"] = price
-                item["total"] = item["quantity"] * price
-                break
-        
-        session["state"] = "COLLECTING_DATA"
-    except ValueError:
-        send_text_message(from_number, "I didn't catch that price. Please enter a number (e.g. 5000 or 5k).")
-        return
+            send_text_message(from_number, "I'm not sure how to handle that right now. Try adding an item or sending the invoice.")
+    except Exception as e:
+        print(f"Error: {e}")
+        send_text_message(from_number, f"Error: {str(e)}")
 
-    check_draft_completeness(from_number)
-
-def check_draft_completeness(from_number):
-    session = user_sessions[from_number]
+def handle_add_item(from_number, entities, is_create=False):
+    is_valid, err = validate_add_item(entities)
     
-    if not session["client"]:
-        session["state"] = "AWAITING_CLIENT_NAME"
-        send_text_message(from_number, "Who is the client for this invoice?")
+    # If starting a new invoice but no items found, just set client
+    if not is_valid and is_create and entities.get("client_name"):
+        session_manager.set_client(from_number, {"name": entities["client_name"]})
+        send_text_message(from_number, f"Started invoice for {entities['client_name']}. What are you selling?")
         return
-
-    if not session["items"]:
-        client_name = session["client"]["name"]
-        send_text_message(from_number, f"Got the client: *{client_name}*. ✅\n\nNow, what are you selling and at what price?\n(Example: 'Rice 2000' or '2 Laptops at 300k each')")
+        
+    if not is_valid:
+        send_text_message(from_number, err)
         return
-
-    # Check for items without prices
-    for item in session["items"]:
-        if item["price"] == 0:
-            session["state"] = "AWAITING_ITEM_PRICE"
-            send_text_message(from_number, f"What is the price for {item['name']}?")
+        
+    for item in entities["items"]:
+        success, msg = session_manager.add_item(from_number, item)
+        if not success:
+            send_text_message(from_number, msg)
             return
-
-    # EVERYTHING FOUND -> SHOW PREVIEW
-    show_confirmation_preview(from_number)
-
-def show_confirmation_preview(from_number):
-    session = user_sessions[from_number]
-    session["state"] = "AWAITING_CONFIRMATION"
     
+    if entities.get("client_name"):
+        session_manager.set_client(from_number, {"name": entities["client_name"]})
+        
+    session = session_manager.get_session(from_number)
+    client_name = session['invoice']['client']['name'] if session['invoice']['client'] else None
+    client_text = f" for {client_name}" if client_name else ""
+    send_text_message(from_number, f"Item(s) added{client_text}. Current total is ₦{session['invoice']['total']:,.0f}.\n\nSay 'send it' when you're done, or keep adding/editing items.")
+
+def handle_update_item(from_number, entities):
+    is_valid, err = validate_update_item(entities)
+    if not is_valid:
+        send_text_message(from_number, err)
+        return
+        
+    target = entities["target_item_name"]
+    price = entities.get("new_price")
+    qty = entities.get("new_quantity")
+    
+    success, msg = session_manager.update_item(from_number, target, price, qty)
+    send_text_message(from_number, msg)
+
+def handle_remove_item(from_number, entities):
+    is_valid, err = validate_remove_item(entities)
+    if not is_valid:
+        send_text_message(from_number, err)
+        return
+        
+    success, msg = session_manager.remove_item(from_number, entities["target_item_name"])
+    send_text_message(from_number, msg)
+
+def handle_set_client(from_number, entities):
+    if not entities.get("client_name"):
+        send_text_message(from_number, "I couldn't detect the client's name.")
+        return
+    success, msg = session_manager.set_client(from_number, {"name": entities["client_name"]})
+    if success:
+        send_text_message(from_number, f"Client set to {entities['client_name']}.")
+    else:
+        send_text_message(from_number, msg)
+
+def handle_preview_and_confirm(from_number):
+    session = session_manager.get_session(from_number)
+    invoice = session["invoice"]
+    
+    is_valid, err = validate_invoice_for_sending(invoice)
+    if not is_valid:
+        send_text_message(from_number, f"Cannot send yet: {err}")
+        return
+        
+    # Phase 8: Invoice Review Step
     items_text = ""
-    subtotal = 0
-    for item in session["items"]:
-        items_text += f"• {item['quantity']} {item['name']} @ ₦{item['price']:,.0f}\n"
-        subtotal += item['total']
-    
+    for item in invoice["items"]:
+        items_text += f"• {item['quantity']}x {item['name']} — ₦{item['total']:,.0f}\n"
+        
     preview = (
         f"📝 *Invoice Preview*\n\n"
-        f"👤 *Client:* {session['client']['name']}\n"
+        f"👤 *Client:* {invoice['client']['name']}\n"
         f"📦 *Items:*\n{items_text}\n"
-        f"💰 *Total:* ₦{subtotal:,.0f}\n\n"
-        f"Confirm? (Yes/Edit)"
+        f"💰 *Subtotal:* ₦{invoice['subtotal']:,.0f}\n"
+        f"💰 *VAT:* ₦{invoice['vat']:,.0f}\n"
+        f"💰 *Total:* ₦{invoice['total']:,.0f}\n\n"
+        f"Send this invoice? (Reply YES or NO)"
     )
+    
+    session_manager.set_pending_action(from_number, "send_invoice")
     send_text_message(from_number, preview)
 
-# --- BUSINESS SETUP (Keep original logic) ---
+def execute_pending_action(from_number):
+    session = session_manager.get_session(from_number)
+    action = session.get("pending_action")
+    if not action:
+        session_manager.update_status(from_number, "editing")
+        return
+        
+    if action["type"] == "send_invoice":
+        session_manager.clear_pending_action(from_number)
+        finish_and_send_invoice(from_number)
+    elif action["type"] == "cancel_invoice":
+        session_manager.reset_session(from_number)
+        send_text_message(from_number, "Invoice cancelled. You can start a new one anytime.")
+    else:
+        session_manager.clear_pending_action(from_number)
+
+
+# --- BUSINESS SETUP ---
 def start_business_setup(from_number):
-    user_sessions[from_number] = {"state": "AWAITING_BIZ_NAME"}
+    setup_sessions[from_number] = {"state": "AWAITING_BIZ_NAME"}
     send_text_message(from_number, "Business Setup: What is your Business Name?")
 
 def process_biz_name(from_number, text):
-    user_sessions[from_number] = {"state": "AWAITING_BIZ_EMAIL", "biz_name": text}
+    setup_sessions[from_number] = {"state": "AWAITING_BIZ_EMAIL", "biz_name": text}
     send_text_message(from_number, "Business Email?")
 
 def process_biz_email(from_number, text):
-    user_sessions[from_number].update({"biz_email": text, "state": "AWAITING_BIZ_BANK1"})
+    setup_sessions[from_number].update({"biz_email": text, "state": "AWAITING_BIZ_BANK1"})
     send_text_message(from_number, "Bank details? (Bank, Acc Number, Acc Name)")
 
 def process_biz_bank1(from_number, text):
@@ -319,20 +307,19 @@ def process_biz_bank1(from_number, text):
     if len(parts) < 3:
         send_text_message(from_number, "Provide Bank, Acc Number, Acc Name.")
         return
-    user_sessions[from_number].update({"bank1": parts, "state": "AWAITING_BIZ_BANK2"})
+    setup_sessions[from_number].update({"bank1": parts, "state": "AWAITING_BIZ_BANK2"})
     send_text_message(from_number, "Second bank? (or 'none')")
 
 def process_biz_bank2(from_number, text):
     if text.lower() != "none":
         parts = [p.strip() for p in text.split(",")]
-        if len(parts) >= 3: user_sessions[from_number]["bank2"] = parts
-    user_sessions[from_number]["state"] = "AWAITING_REFUND_POLICY"
+        if len(parts) >= 3: setup_sessions[from_number]["bank2"] = parts
+    setup_sessions[from_number]["state"] = "AWAITING_REFUND_POLICY"
     send_text_message(from_number, "Finally, let's set your Refund Policy. 📜\n\nType 'default' to use our standard policy, 'none' for no policy, or type out your custom policy.")
 
 def process_refund_policy(from_number, text):
-    session = user_sessions[from_number]
+    session = setup_sessions[from_number]
     
-    # Professional Default Policy
     DEFAULT_POLICY = (
         "Thank you for your business. Please note that all sales are final. "
         "Refunds or exchanges are only permitted within 7 days of purchase for items found to be defective. "
@@ -355,33 +342,50 @@ def process_refund_policy(from_number, text):
         "refund_policy_text": refund_text, "location": "Lagos"
     }
     save_business_profile(from_number, profile)
-    send_text_message(from_number, "Profile saved! ✅ Type 'invoice' to start.")
-    del user_sessions[from_number]
+    send_text_message(from_number, "Profile saved! ✅ You can now create invoices.")
+    del setup_sessions[from_number]
+
 
 def finish_and_send_invoice(from_number):
-    session = user_sessions.get(from_number)
+    session = session_manager.get_session(from_number)
     send_text_message(from_number, "Generating your invoice... ⏳")
+    
     profile = get_business_profile(from_number)
-    vat_rate = session.get("vat_rate", 0.0)
-    pdf_path = generate_pdf(profile, session["client"], session["items"], vat_rate=vat_rate)
+    invoice = session["invoice"]
+    
+    # We pass the default 7.5 VAT since we calculated it in state_manager
+    pdf_path = generate_pdf(profile, invoice["client"], invoice["items"], vat_rate=7.5)
     invoice_id = os.path.basename(pdf_path).split("_")[1].replace(".pdf", "")
+    
     save_invoice_record(from_number, {
-        "id": invoice_id, "client": session["client"], "items": session["items"],
-        "vat_rate": vat_rate, "total": sum(i["total"] for i in session["items"]) * (1 + vat_rate/100),
+        "id": invoice_id, "client": invoice["client"], "items": invoice["items"],
+        "vat_rate": 7.5, "total": invoice["total"],
         "is_paid": False, "timestamp": str(datetime.now())
     })
+    
     media_id = upload_media(pdf_path).get("id")
     if media_id:
         send_document_message(from_number, media_id, os.path.basename(pdf_path))
         send_text_message(from_number, f"Invoice {invoice_id} sent! ✅ Type 'receipt' if paid.")
-        session["state"] = "INVOICE_SENT"; session["last_invoice_id"] = invoice_id
+        
+        # Lock session
+        session_manager.update_status(from_number, "confirmed")
+        session["last_invoice_id"] = invoice_id
     else:
-        send_text_message(from_number, "Failed to upload.")
+        send_text_message(from_number, "Failed to upload invoice to WhatsApp.")
+        session_manager.update_status(from_number, "editing")
 
 def send_receipt(from_number):
-    session = user_sessions.get(from_number)
+    session = session_manager.get_session(from_number)
     inv_id = session.get("last_invoice_id")
+    if not inv_id:
+        send_text_message(from_number, "No recent invoice found to mark as paid.")
+        return
+        
     record = get_invoice_record(from_number, inv_id)
+    if not record:
+        return
+        
     mark_invoice_as_paid(from_number, inv_id)
     profile = get_business_profile(from_number)
     path = generate_pdf(profile, record["client"], record["items"], is_receipt=True, vat_rate=record.get("vat_rate", 0.0))
@@ -390,3 +394,4 @@ def send_receipt(from_number):
 
 if __name__ == "__main__":
     app.run(port=5001, debug=True)
+

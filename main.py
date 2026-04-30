@@ -2,7 +2,7 @@ import os
 import sys
 from src.persistence.storage import get_company_details, save_company_details, load_clients, save_clients
 from src.core.generator import generate_pdf
-from src.nlp.parser import extract_invoice_data
+from src.nlp.parser import extract_intent
 
 def setup_company():
     company = get_company_details()
@@ -122,13 +122,14 @@ def main():
         msg = "\n".join(lines)
         
         if msg:
-            data = extract_invoice_data(msg)
-            client_name = data.get('name') or input("Client Name: ").strip()
+            data = extract_intent(msg)
+            entities = data.get("entities", {})
+            client_name = entities.get('client_name') or input("Client Name: ").strip()
             client = get_or_create_client(client_name)
             
             items = []
-            if data.get('items'):
-                for ext_item in data['items']:
+            if entities.get('items'):
+                for ext_item in entities['items']:
                     if ext_item.get('price') and ext_item['price'] > 0:
                         price = ext_item['price']
                         print(f"Using parsed price for {ext_item['name']}: ₦{price:,.2f}")
@@ -146,13 +147,6 @@ def main():
                             'price': price,
                             'total': ext_item['quantity'] * price
                         })
-            elif data.get('amount'):
-                items = [{
-                    'name': 'Custom Order',
-                    'quantity': 1,
-                    'price': float(data['amount']),
-                    'total': float(data['amount'])
-                }]
             
             if not items:
                 items = get_items_manually()
