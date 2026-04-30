@@ -91,6 +91,48 @@ def handle_media_message(from_number, media_obj, media_type):
         print(f"Error processing multimodal: {e}")
         send_text_message(from_number, "Sorry, I couldn't understand that media. Could you try typing the details?")
 
+import re
+
+def route_message(message, session):
+    msg = message.lower().strip()
+    
+    # 1. State-Aware Confirmations
+    if session["status"] == "awaiting_confirmation":
+        if msg in ["yes", "y", "yeah", "confirm", "ok", "send", "do it"]:
+            return {"route": "local", "intent": "confirm_yes", "confidence": 1.0, "entities": {}}
+        if msg in ["no", "n", "cancel", "stop", "edit"]:
+            return {"route": "local", "intent": "confirm_no", "confidence": 1.0, "entities": {}}
+        return {"route": "local", "intent": "invalid_confirmation", "confidence": 1.0, "entities": {}}
+            
+    # 2. State-Aware Numeric Input (Missing Item Info)
+    queue = session.get("pending_item_fixes", [])
+    if queue:
+        if msg in ["cancel", "stop", "nevermind", "never mind", "skip"]:
+            return {"route": "local", "intent": "cancel_item", "confidence": 1.0, "entities": {}}
+        # If the message has digits, route locally as numeric input
+        nums = re.findall(r'\d+', msg.replace("k", "000").replace(",", ""))
+        if nums:
+            return {"route": "local", "intent": "numeric_input", "confidence": 1.0, "entities": {"values": nums}}
+            
+    # 3. Global Navigation / Commands
+    if msg in ["reset", "start over", "clear"]:
+        return {"route": "local", "intent": "reset", "confidence": 1.0, "entities": {}}
+    if msg == "receipt":
+        return {"route": "local", "intent": "receipt", "confidence": 1.0, "entities": {}}
+    if msg in ["preview", "preview invoice", "show invoice"]:
+        return {"route": "local", "intent": "preview_invoice", "confidence": 1.0, "entities": {}}
+    if msg in ["send it", "send invoice", "send"]:
+        return {"route": "local", "intent": "send_invoice", "confidence": 1.0, "entities": {}}
+        
+    # 4. Keyword Shortcuts (Conversational Stubs)
+    if "add" in msg and "item" in msg:
+        return {"route": "local", "intent": "add_item_prompt", "confidence": 1.0, "entities": {}}
+    if "client" in msg and "set" in msg:
+        return {"route": "local", "intent": "set_client_prompt", "confidence": 1.0, "entities": {}}
+        
+    # Fallback -> Gemini
+    return {"route": "gemini"}
+
 def handle_message(from_number, text):
     text_lower = text.lower()
     
@@ -133,8 +175,11 @@ def handle_message(from_number, text):
         return
 
     # 1. NLP Intent Extraction
-    if text_lower in ["send it", "send"]:
-        data = {"intent": "send_invoice", "confidence": 1.0, "entities": {}}
+    session = session_manager.get_session(from_number)
+    route = route_message(text, session)
+    
+    if route["route"] == "local":
+        data = route
     else:
         data = extract_intent(text)
     
@@ -149,34 +194,38 @@ def handle_message(from_number, text):
 
 def process_intent(from_number, data, original_text=""):
     session = session_manager.get_session(from_number)
-    
-    # Phase 4: Confirmation System
-    if session["status"] == "awaiting_confirmation":
-        text_lower = original_text.lower()
-        if text_lower in ["yes", "y", "confirm", "ok", "send", "do it"]:
-            execute_pending_action(from_number)
-        elif text_lower in ["no", "n", "cancel", "stop", "edit"]:
-            session_manager.clear_pending_action(from_number)
-            send_text_message(from_number, "Action cancelled. You can continue editing the invoice.")
-        else:
-            send_text_message(from_number, "Please reply YES to confirm or NO to cancel.")
+    intent = data.get("intent", "unknown")
+    confidence = data.get("confidence", 1.0)
+    entities = data.get("entities", {})
+
+    if not check_confidence(confidence):
+        send_text_message(from_number, "I didn't quite catch that. Could you rephrase what you want to do with the invoice?")
         return
 
-    # Check if we are waiting for missing details
-    queue = session.get("pending_item_fixes", [])
-    if queue:
-        text_lower = original_text.lower()
-        if text_lower in ["cancel", "stop", "nevermind", "never mind", "skip"]:
-            queue.pop(0)
+    try:
+        # Local Intents
+        if intent == "confirm_yes":
+            execute_pending_action(from_number)
+            return
+        elif intent == "confirm_no":
+            session_manager.clear_pending_action(from_number)
+            send_text_message(from_number, "Action cancelled. You can continue editing the invoice.")
+            return
+        elif intent == "invalid_confirmation":
+            send_text_message(from_number, "Please reply YES to confirm or NO to cancel.")
+            return
+        elif intent == "cancel_item":
+            queue = session.get("pending_item_fixes", [])
+            if queue: queue.pop(0)
             session["pending_item_fixes"] = queue
             send_text_message(from_number, "Okay, skipped that item.")
             process_pending_item_fixes(from_number)
             return
-            
-        import re
-        nums = re.findall(r'\d+', text_lower.replace("k", "000").replace(",", ""))
-        if nums:
+        elif intent == "numeric_input":
+            queue = session.get("pending_item_fixes", [])
+            if not queue: return
             pending_item = queue[0]
+            nums = entities.get("values", [])
             price_missing = pending_item.get("price") is None or pending_item.get("price") < 0
             qty_missing = pending_item.get("quantity") is None or pending_item.get("quantity") <= 0
             
@@ -196,16 +245,21 @@ def process_intent(from_number, data, original_text=""):
             session_manager.add_item(from_number, pending_item)
             process_pending_item_fixes(from_number)
             return
-
-    intent = data.get("intent", "unknown")
-    confidence = data.get("confidence", 1.0)
-    entities = data.get("entities", {})
-
-    if not check_confidence(confidence):
-        send_text_message(from_number, "I didn't quite catch that. Could you rephrase what you want to do with the invoice?")
-        return
-
-    try:
+        elif intent == "reset":
+            session_manager.reset_session(from_number)
+            send_text_message(from_number, "Invoice reset. You can start a new one anytime.")
+            return
+        elif intent == "receipt":
+            send_receipt(from_number)
+            return
+        elif intent == "add_item_prompt":
+            send_text_message(from_number, "Sure, what item would you like to add? (e.g., '1 laptop for 300k')")
+            return
+        elif intent == "set_client_prompt":
+            send_text_message(from_number, "Who is this invoice for?")
+            return
+            
+        # Original Gemini Intents
         if intent == "create_invoice":
             session_manager.reset_session(from_number)
             handle_add_item(from_number, entities, is_create=True)

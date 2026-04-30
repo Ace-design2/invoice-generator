@@ -28,9 +28,10 @@ def simulate_message(text, mock_intent_data):
     print(f"[USER -> Bot]: {text}")
     print(f"[MOCKED INTENT]: {mock_intent_data['intent']}")
     
-    # We bypass handle_message so we don't hit Gemini at all,
-    # and call process_intent directly.
-    app.process_intent("1234567890", mock_intent_data, original_text=text)
+    # We patch extract_intent so we don't hit Gemini, but we call handle_message
+    # so the new route_message logic is tested.
+    with patch("src.bot.app.extract_intent", return_value=mock_intent_data):
+        app.handle_message("1234567890", text)
 
 def run_flow():
     # 1. Create Invoice
