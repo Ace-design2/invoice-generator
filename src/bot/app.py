@@ -112,8 +112,12 @@ def handle_message(from_number, text):
             send_text_message(from_number, "Welcome! Please set up your business profile first.\n\nType 'start' to begin.")
             return
 
-    if text_lower in ["start", "hi", "hello", "new", "reset"] and not profile:
-        start_business_setup(from_number)
+    if text_lower in ["start", "hi", "hello", "new", "reset"]:
+        if not profile:
+            start_business_setup(from_number)
+        else:
+            biz_name = profile.get("name", "")
+            send_text_message(from_number, f"Hello {biz_name}! 👋 Welcome back. To create an invoice, just tell me what you're selling. (e.g., '2 laptops for John at 300k')")
         return
 
     # Check if in setup mode
@@ -129,7 +133,10 @@ def handle_message(from_number, text):
         return
 
     # 1. NLP Intent Extraction
-    data = extract_intent(text)
+    if text_lower in ["send it", "send"]:
+        data = {"intent": "send_invoice", "confidence": 1.0, "entities": {}}
+    else:
+        data = extract_intent(text)
     
     # 2. Logging & Debugging (Phase 11)
     print(f"--- LOG ---")
@@ -154,6 +161,39 @@ def process_intent(from_number, data, original_text=""):
         else:
             send_text_message(from_number, "Please reply YES to confirm or NO to cancel.")
         return
+
+    # Check if we are waiting for missing details
+    pending_item = session.get("pending_item_fix")
+    if pending_item:
+        text_lower = original_text.lower()
+        if text_lower in ["cancel", "stop", "nevermind", "never mind"]:
+            session["pending_item_fix"] = None
+            send_text_message(from_number, "Okay, skipped that item.")
+            return
+            
+        import re
+        nums = re.findall(r'\d+', text_lower.replace("k", "000").replace(",", ""))
+        if nums:
+            price_missing = pending_item.get("price") is None or pending_item.get("price") < 0
+            qty_missing = pending_item.get("quantity") is None or pending_item.get("quantity") <= 0
+            
+            if price_missing and qty_missing and len(nums) >= 2:
+                pending_item["quantity"] = int(nums[0])
+                pending_item["price"] = float(nums[1])
+            elif price_missing and not qty_missing and len(nums) >= 1:
+                pending_item["price"] = float(nums[0])
+            elif qty_missing and not price_missing and len(nums) >= 1:
+                pending_item["quantity"] = int(nums[0])
+            elif len(nums) == 1:
+                pending_item["price"] = float(nums[0])
+                pending_item["quantity"] = 1
+                
+            session["pending_item_fix"] = None
+            entities = {"items": [pending_item]}
+            handle_add_item(from_number, entities)
+            return
+        else:
+            session["pending_item_fix"] = None
 
     intent = data.get("intent", "unknown")
     confidence = data.get("confidence", 1.0)
@@ -187,7 +227,7 @@ def process_intent(from_number, data, original_text=""):
         send_text_message(from_number, f"Error: {str(e)}")
 
 def handle_add_item(from_number, entities, is_create=False):
-    is_valid, err = validate_add_item(entities)
+    is_valid, err, error_item = validate_add_item(entities)
     
     # If starting a new invoice but no items found, just set client
     if not is_valid and is_create and entities.get("client_name"):
@@ -196,6 +236,9 @@ def handle_add_item(from_number, entities, is_create=False):
         return
         
     if not is_valid:
+        if error_item:
+            session = session_manager.get_session(from_number)
+            session["pending_item_fix"] = error_item
         send_text_message(from_number, err)
         return
         
