@@ -93,6 +93,102 @@ def handle_media_message(from_number, media_obj, media_type):
 
 import re
 
+def is_command(message):
+    return message.strip().startswith("/")
+
+def parse_command(message):
+    parts = message.strip().split()
+    command = parts[0].lower()
+    args = parts[1:]
+    return command, args
+
+def initiate_wallet_payment(profile):
+    payment_link = "https://paystack.com/pay/mock_wallet_fund"
+    return f"Fund your wallet here: {payment_link}"
+
+def initiate_subscription_payment(profile):
+    payment_link = "https://paystack.com/pay/mock_subscription"
+    return f"Upgrade your plan here: {payment_link}"
+
+def list_saved_items(profile):
+    items = profile.get("saved_items", [])
+    if not items:
+        return "No saved items."
+    response = "Saved Items:\n"
+    for item in items:
+        response += f"- {item['name']} (₦{item['price']:,.0f})\n"
+    return response
+
+def list_saved_contacts(profile):
+    contacts = profile.get("saved_contacts", [])
+    if not contacts:
+        return "No saved contacts."
+    response = "Saved Contacts:\n"
+    for c in contacts:
+        response += f"- {c['name']} ({c['phone']})\n"
+    return response
+
+def show_help():
+    return """Available Commands:
+/help
+/wallet_balance
+/fund_wallet
+/plan
+/upgrade
+/invoice_preview
+/send_invoice
+/reset_invoice
+/list_saved_items
+/list_saved_contacts
+/add_saved_item <name> <price>
+/add_contact <name> <phone>"""
+
+def handle_command(command, args, session, profile, from_number):
+    if command == "/help":
+        return show_help()
+    elif command == "/wallet_balance":
+        balance = profile.get("wallet_balance", 0)
+        return f"Your wallet balance is ₦{balance:,.0f}"
+    elif command == "/fund_wallet":
+        return initiate_wallet_payment(profile)
+    elif command == "/plan":
+        plan = profile.get("plan", "free")
+        return f"Current plan: {plan}"
+    elif command == "/upgrade":
+        return initiate_subscription_payment(profile)
+    elif command == "/list_saved_items":
+        return list_saved_items(profile)
+    elif command == "/list_saved_contacts":
+        return list_saved_contacts(profile)
+    elif command == "/add_saved_item":
+        if len(args) < 2:
+            return "Usage: /add_saved_item <name> <price>"
+        name = " ".join(args[:-1])
+        try:
+            price = int(args[-1])
+        except ValueError:
+            return "Price must be a number."
+            
+        items = profile.get("saved_items", [])
+        items.append({"name": name, "price": price})
+        profile["saved_items"] = items
+        from src.persistence.storage import save_business_profile
+        save_business_profile(from_number, profile)
+        return f"'{name}' saved to your items."
+    elif command == "/add_contact":
+        if len(args) < 2:
+            return "Usage: /add_contact <name> <phone>"
+        name = " ".join(args[:-1])
+        phone = args[-1]
+        contacts = profile.get("saved_contacts", [])
+        contacts.append({"name": name, "phone": phone})
+        profile["saved_contacts"] = contacts
+        from src.persistence.storage import save_business_profile
+        save_business_profile(from_number, profile)
+        return f"Contact '{name}' saved."
+        
+    return "Unknown command. Type /help to see available commands."
+
 def route_message(message, session):
     msg = message.lower().strip()
     
@@ -172,6 +268,26 @@ def handle_message(from_number, text):
 
     if text_lower == "receipt":
         send_receipt(from_number)
+        return
+
+    # 0. COMMAND LAYER
+    if is_command(text):
+        command, args = parse_command(text)
+        session = session_manager.get_session(from_number)
+        
+        # Route special commands directly to existing intent processors
+        if command == "/send_invoice":
+            process_intent(from_number, {"intent": "send_invoice", "confidence": 1.0, "entities": {}}, original_text=text)
+            return
+        elif command == "/invoice_preview":
+            process_intent(from_number, {"intent": "preview_invoice", "confidence": 1.0, "entities": {}}, original_text=text)
+            return
+        elif command == "/reset_invoice":
+            process_intent(from_number, {"intent": "reset", "confidence": 1.0, "entities": {}}, original_text=text)
+            return
+            
+        response_text = handle_command(command, args, session, profile, from_number)
+        send_text_message(from_number, response_text)
         return
 
     # 1. NLP Intent Extraction

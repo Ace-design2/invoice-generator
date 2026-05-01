@@ -34,6 +34,11 @@ def simulate_message(text, mock_intent_data):
         app.handle_message("1234567890", text)
 
 def run_flow():
+    # 0. Test Commands
+    simulate_message("/help", {"intent": "unknown", "confidence": 0.5, "entities": {}})
+    simulate_message("/add_saved_item Test Item 500", {"intent": "unknown", "confidence": 0.5, "entities": {}})
+    simulate_message("/list_saved_items", {"intent": "unknown", "confidence": 0.5, "entities": {}})
+    
     # 1. Create Invoice
     simulate_message(
         "Create invoice for John for 2 laptops at 300k",
