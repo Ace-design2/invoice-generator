@@ -5,7 +5,6 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__
 BUSINESSES_FILE = os.path.join(DATA_DIR, "businesses.json")
 CLIENTS_FILE = os.path.join(DATA_DIR, "clients.json")
 INVOICES_FILE = os.path.join(DATA_DIR, "invoices.json")
-COMPANY_DETAILS_FILE = os.path.join(DATA_DIR, "company_details.json")
 
 def load_json(file_path):
     if os.path.exists(file_path):
@@ -21,12 +20,7 @@ def save_json(file_path, data):
     with open(file_path, 'w') as f:
         json.dump(data, f, indent=4)
 
-# --- SINGLE USER COMPATIBILITY (for main.py) ---
-def get_company_details():
-    return load_json(COMPANY_DETAILS_FILE)
 
-def save_company_details(company):
-    save_json(COMPANY_DETAILS_FILE, company)
 
 def load_clients(owner_phone=None):
     all_clients = load_json(CLIENTS_FILE)

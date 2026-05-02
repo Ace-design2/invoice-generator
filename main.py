@@ -1,19 +1,22 @@
 import os
 import sys
-from src.persistence.storage import get_company_details, save_company_details, load_clients, save_clients
+from src.persistence.storage import get_business_profile, save_business_profile, load_clients, save_clients
 from src.core.generator import generate_pdf
 from src.nlp.parser import extract_intent
 
 def setup_company():
-    company = get_company_details()
+    # Use a hardcoded test number for local CLI testing since there's no WhatsApp webhook payload here
+    phone = "1234567890"
+    company = get_business_profile(phone)
     if company:
         print(f"Loaded company details for {company.get('name')}.")
         use_existing = input("Do you want to use these details? (y/n) [y]: ").strip().lower()
         if use_existing == 'y' or use_existing == '':
+            company['phone'] = phone
             return company
             
     print("\n--- Enter Company Details ---")
-    company = {}
+    company = {'phone': phone}
     name_or_logo = input("Company Name or Logo Path (e.g., UNIQUE FOOTWEARS or /path/to/logo.png): ").strip()
     
     if os.path.isfile(name_or_logo):
@@ -25,7 +28,6 @@ def setup_company():
         
     company['contact_name'] = input("Contact Name: ").strip()
     company['email'] = input("Email: ").strip()
-    company['phone'] = input("Phone Number: ").strip()
     company['location'] = input("Location: ").strip()
     company['bank1_name'] = input("Bank 1 Name: ").strip()
     company['bank1_account'] = input("Bank 1 Account Number: ").strip()
@@ -50,7 +52,7 @@ def setup_company():
     policy = input(f"Enter Policy Text (Press Enter for default):\n[{default_policy}]\n> ").strip()
     company['refund_policy_text'] = policy if policy else default_policy
     
-    save_company_details(company)
+    save_business_profile(phone, company)
     print("Company details saved!")
     return company
 
