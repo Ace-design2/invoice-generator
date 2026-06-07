@@ -1,5 +1,5 @@
 import json
-from src.nlp.parser import extract_invoice_data
+from src.nlp.parser import extract_intent
 
 def run_tests():
     test_cases = [
@@ -27,7 +27,7 @@ def run_tests():
     for i, test in enumerate(test_cases, 1):
         print(f"Test {i}: '{test}'")
         try:
-            data = extract_invoice_data(test)
+            data = extract_intent(test)
             print("Output:")
             print(json.dumps(data, indent=2))
         except Exception as e:

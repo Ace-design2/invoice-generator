@@ -209,6 +209,8 @@ def route_message(message, session):
         nums = re.findall(r'\d+', msg.replace("k", "000").replace(",", ""))
         if nums:
             return {"route": "local", "intent": "numeric_input", "confidence": 1.0, "entities": {"values": nums}}
+        # If no digits found, intercept here and prevent falling back to Gemini
+        return {"route": "local", "intent": "invalid_item_fix_input", "confidence": 1.0, "entities": {}}
             
     # 3. Global Navigation / Commands
     if msg in ["reset", "start over", "clear"]:
@@ -336,6 +338,21 @@ def process_intent(from_number, data, original_text=""):
             session["pending_item_fixes"] = queue
             send_text_message(from_number, "Okay, skipped that item.")
             process_pending_item_fixes(from_number)
+            return
+        elif intent == "invalid_item_fix_input":
+            queue = session.get("pending_item_fixes", [])
+            if queue:
+                next_item = queue[0]
+                price_missing = next_item.get("price") is None or next_item.get("price") < 0
+                qty_missing = next_item.get("quantity") is None or next_item.get("quantity") <= 0
+                
+                if price_missing and qty_missing:
+                    msg = f"I couldn't detect a valid quantity or price for '{next_item.get('name')}'. Please reply with numbers (e.g. '2, 5000' or '2 for 5k'), or type 'cancel' to skip."
+                elif price_missing:
+                    msg = f"I couldn't detect a valid price for '{next_item.get('name')}'. Please reply with a number (e.g. '5000' or '5k'), or type 'cancel' to skip."
+                elif qty_missing:
+                    msg = f"I couldn't detect a valid quantity for '{next_item.get('name')}'. Please reply with a number (e.g. '2'), or type 'cancel' to skip."
+                send_text_message(from_number, msg)
             return
         elif intent == "numeric_input":
             queue = session.get("pending_item_fixes", [])
