@@ -70,6 +70,14 @@ def save_client(owner_phone, client_data):
     all_clients[owner_phone][client_name] = client_data
     save_json(CLIENTS_FILE, all_clients)
 
+def remove_client(owner_phone, client_name):
+    all_clients = load_json(CLIENTS_FILE)
+    if owner_phone in all_clients and client_name.lower() in all_clients[owner_phone]:
+        del all_clients[owner_phone][client_name.lower()]
+        save_json(CLIENTS_FILE, all_clients)
+        return True
+    return False
+
 # --- INVOICES (Scoped per Business) ---
 def save_invoice_record(owner_phone, invoice_data):
     all_invoices = load_json(INVOICES_FILE)
